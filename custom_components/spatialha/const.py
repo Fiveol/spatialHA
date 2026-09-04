@@ -1,7 +1,7 @@
-"""Constants for integration_blueprint."""
+"""Constants for spatialHA."""
 
 from logging import Logger, getLogger
 
 LOGGER: Logger = getLogger(__package__)
 
-DOMAIN = "integration_blueprint"
+DOMAIN = "spatialha"

@@ -1,0 +1,17 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "spatialHA",
+        "description": "Set up the spatialHA integration.",
+        "data": {}
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only a single instance of spatialHA is allowed."
+    },
+    "create_entry": {
+      "default": "Successfully added spatialHA"
+    }
+  }
+}

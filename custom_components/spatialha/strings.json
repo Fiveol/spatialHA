@@ -1,0 +1,17 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "spatialHA",
+        "description": "Set up the spatialHA integration.",
+        "data": {}
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "[%key:common::config_flow::abort::single_instance_allowed%]"
+    },
+    "create_entry": {
+      "default": "Successfully added spatialHA"
+    }
+  }
+}

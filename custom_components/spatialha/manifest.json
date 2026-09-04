@@ -1,6 +1,6 @@
 {
-  "domain": "integration_blueprint",
-  "name": "integration_blueprint",
+  "domain": "spatialha",
+  "name": "spatialHA",
   "codeowners": ["@Fiveol"],
   "config_flow": true,
   "documentation": "https://github.com/Fiveol/spatialHA",
