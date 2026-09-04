@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import pathlib
 from importlib.metadata import PackageNotFoundError, version
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN, LOGGER
 
@@ -16,6 +19,12 @@ PANEL_NAME = "spatialHA-panel"
 PANEL_TITLE = "spatialHA"
 PANEL_ICON = "mdi:account"
 PANEL_URL_PATH = "spatialHA"
+
+STORAGE_KEY_SETTINGS = "spatialHA.settings"
+STORAGE_KEY_BLE_DATA = "spatialHA.ble_data"
+STORAGE_KEY_BLE_SIGHTINGS = "spatialHA.sightings"
+STORAGE_VERSION = 1
+DEFAULT_UPDATE_INTERVAL = 1.0
 
 
 def _get_version_sync() -> str:
@@ -70,6 +79,133 @@ def _resolve_js_path_sync() -> pathlib.Path:
     return p1
 
 
+# --- Storage helpers for Settings and BLE data ( .storage/spatialHA.* ) ---
+def _get_settings_store(hass: HomeAssistant) -> Store:
+    """Get Store for spatialHA.settings."""
+    return Store(hass, STORAGE_VERSION, STORAGE_KEY_SETTINGS)
+
+
+def _get_ble_data_store(hass: HomeAssistant) -> Store:
+    """Get Store for spatialHA.ble_data."""
+    return Store(hass, STORAGE_VERSION, STORAGE_KEY_BLE_DATA)
+
+
+def _get_ble_sightings_store(hass: HomeAssistant) -> Store:
+    """Get Store for spatialHA.sightings (extra file for future)."""
+    return Store(hass, STORAGE_VERSION, STORAGE_KEY_BLE_SIGHTINGS)
+
+
+async def _async_load_settings(hass: HomeAssistant) -> dict:
+    """Load settings from .storage/spatialHA.settings."""
+    store = _get_settings_store(hass)
+    data = await store.async_load()
+    if not isinstance(data, dict):
+        data = {}
+    # Apply defaults
+    if "update_interval" not in data:
+        data["update_interval"] = DEFAULT_UPDATE_INTERVAL
+    # Validate
+    try:
+        iv = float(data["update_interval"])
+        if iv <= 0 or iv > 3600:
+            iv = DEFAULT_UPDATE_INTERVAL
+        data["update_interval"] = iv
+    except Exception:  # noqa: BLE001
+        data["update_interval"] = DEFAULT_UPDATE_INTERVAL
+    return data
+
+
+async def _async_save_settings(hass: HomeAssistant, settings: dict) -> None:
+    """Save settings to .storage/spatialHA.settings."""
+    store = _get_settings_store(hass)
+    await store.async_save(settings)
+    hass.data.setdefault(DOMAIN, {})["settings"] = settings
+
+
+async def _async_update_ble_data_and_push(hass: HomeAssistant, *_args) -> None:
+    """Fetch BLE data, store to .storage/spatialHA.* and push to subscribers."""
+    try:
+        # Import here to avoid circular import
+        from .websocket import _get_ble_data
+
+        data = _get_ble_data(hass)
+        # Add timestamp
+        import time
+
+        data["last_updated"] = time.time()
+        data["update_interval"] = hass.data.get(DOMAIN, {}).get("settings", {}).get("update_interval", DEFAULT_UPDATE_INTERVAL)
+
+        # Cache in hass.data
+        hass.data.setdefault(DOMAIN, {})["ble_data"] = data
+
+        # Persist to storage (non-blocking via Store which uses executor)
+        try:
+            # Split into two files for future extensibility: ble_data and sightings
+            ble_store = _get_ble_data_store(hass)
+            sightings_store = _get_ble_sightings_store(hass)
+            # Store full data in ble_data, and sightings separately
+            await ble_store.async_save({"devices": data.get("devices", []), "scanners": data.get("scanners", []), "last_updated": data["last_updated"]})
+            await sightings_store.async_save({"sightings": data.get("sightings", []), "last_updated": data["last_updated"]})
+        except Exception as err:  # noqa: BLE001
+            LOGGER.debug("Failed to save BLE data to storage: %s", err)
+
+        # Push to all BLE subscribers
+        subscribers = hass.data.get(DOMAIN, {}).get("ble_subscribers", set())
+        if subscribers:
+            try:
+                from homeassistant.components import websocket_api as ws_api
+
+                for conn, msg_id in list(subscribers):
+                    try:
+                        conn.send_message(ws_api.event_message(msg_id, {"type": "ble_update", "data": data}))
+                    except Exception as err:  # noqa: BLE001
+                        LOGGER.debug("Failed to push BLE to %s: %s", conn, err)
+            except Exception as err:  # noqa: BLE001
+                LOGGER.debug("BLE push failed: %s", err)
+    except Exception as err:  # noqa: BLE001
+        LOGGER.error("BLE update failed: %s", err)
+
+
+async def _async_start_ble_polling(hass: HomeAssistant) -> None:
+    """Start or restart BLE polling with current update_interval."""
+    # Cancel existing
+    old_unsub = hass.data.get(DOMAIN, {}).pop("ble_unsub_interval", None)
+    if old_unsub:
+        try:
+            old_unsub()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Load settings to get interval
+    settings = hass.data.get(DOMAIN, {}).get("settings")
+    if not settings:
+        settings = await _async_load_settings(hass)
+        hass.data.setdefault(DOMAIN, {})["settings"] = settings
+        # Also store ble_data if not yet loaded
+        try:
+            ble_store = _get_ble_data_store(hass)
+            cached = await ble_store.async_load()
+            if isinstance(cached, dict):
+                hass.data.setdefault(DOMAIN, {})["ble_data"] = cached
+        except Exception:  # noqa: BLE001
+            pass
+
+    interval = float(settings.get("update_interval", DEFAULT_UPDATE_INTERVAL))
+
+    # Immediate first update (even if no frontend)
+    await _async_update_ble_data_and_push(hass)
+
+    # Schedule interval
+    try:
+        unsub = async_track_time_interval(
+            hass, _async_update_ble_data_and_push, datetime.timedelta(seconds=interval)
+        )
+        hass.data.setdefault(DOMAIN, {})["ble_unsub_interval"] = unsub
+        LOGGER.info("Started BLE polling every %s seconds", interval)
+    except Exception as err:  # noqa: BLE001
+        LOGGER.error("Failed to start BLE polling: %s", err)
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the spatialHA integration (YAML not supported)."""
     try:
@@ -78,6 +214,25 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         async_register_websocket(hass)
     except Exception as err:  # noqa: BLE001
         LOGGER.debug("Could not register WebSocket in async_setup: %s", err)
+
+    # Prepare data holders and load persisted settings/ble data
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN].setdefault("ble_subscribers", set())
+    try:
+        settings = await _async_load_settings(hass)
+        hass.data[DOMAIN]["settings"] = settings
+        # Load cached BLE data if exists
+        try:
+            ble_store = _get_ble_data_store(hass)
+            cached = await ble_store.async_load()
+            if isinstance(cached, dict) and cached:
+                hass.data[DOMAIN]["ble_data"] = cached
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception as err:  # noqa: BLE001
+        LOGGER.debug("Failed to load settings: %s", err)
+        hass.data[DOMAIN]["settings"] = {"update_interval": DEFAULT_UPDATE_INTERVAL}
+
     return True
 
 
@@ -104,24 +259,24 @@ async def _async_remove_all_spatialHA_panels(hass: HomeAssistant) -> None:
         panels = hass.data.get("frontend_panels", {})  # fallback
 
     to_remove: list[str] = []
-    # Check all registered panels
+    # Check all registered panels - case-insensitive for spatialHA
     for url, panel in list(panels.items()):
         try:
             title = getattr(panel, "sidebar_title", None) or getattr(panel, "title", None) or ""
             comp = getattr(panel, "component_name", "") or ""
             furl = getattr(panel, "frontend_url_path", url) or url
             if (
-                url.lower() in ("spatialHA", "spatialHA-panel")
-                or furl.lower() in ("spatialHA", "spatialHA-panel")
+                url.lower() in ("spatialha", "spatialha-panel")
+                or furl.lower() in ("spatialha", "spatialha-panel")
                 or title == PANEL_TITLE
-                or "spatialHA" in comp.lower()
-                or "spatialHA" in url.lower()
+                or "spatialha" in comp.lower()
+                or "spatialha" in url.lower()
             ):
                 to_remove.append(url)
         except Exception:  # noqa: BLE001
             continue
-    # Always try known variants
-    for variant in ("spatialHA", "spatialHA", "spatialHA-panel", "spatialHA-panel"):
+    # Always try known variants (both capital and lower for robustness, spatialHA is canonical)
+    for variant in ("spatialHA", "spatialha", "spatialHA-panel", "spatialha-panel"):
         if variant not in to_remove:
             to_remove.append(variant)
 
@@ -148,6 +303,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_register_websocket(hass)
     except Exception as err:  # noqa: BLE001
         LOGGER.error("Failed to register WebSocket: %s", err)
+
+    # Load settings and start BLE polling (every Update Interval, even without frontend)
+    try:
+        # Ensure settings loaded
+        if "settings" not in hass.data.get(DOMAIN, {}):
+            settings = await _async_load_settings(hass)
+            hass.data.setdefault(DOMAIN, {})["settings"] = settings
+        await _async_start_ble_polling(hass)
+    except Exception as err:  # noqa: BLE001
+        LOGGER.error("Failed to start BLE polling: %s", err)
 
     # Resolve JS path without blocking event loop
     js_path: pathlib.Path = await hass.async_add_executor_job(_resolve_js_path_sync)
@@ -233,9 +398,21 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     hass.data.get("spatialHA", {}).pop(entry.entry_id, None)
 
-    # If no more entries, clean up version cache
-    if not hass.data.get(DOMAIN) or not any(k != "version" and k != "websocket_registered" for k in hass.data.get(DOMAIN, {})):
+    # If no more entries, clean up version cache and stop BLE polling
+    # Check if any config entries remain for this domain
+    remaining_entries = [k for k in hass.data.get(DOMAIN, {}).keys() if k not in ("version", "websocket_registered", "settings", "ble_data", "ble_subscribers", "ble_unsub_interval", "update_interval")]
+    if not remaining_entries:
+        # Cancel BLE polling
+        unsub = hass.data.get(DOMAIN, {}).pop("ble_unsub_interval", None)
+        if unsub:
+            try:
+                unsub()
+                LOGGER.info("Stopped BLE polling - no entries remaining")
+            except Exception:  # noqa: BLE001
+                pass
         hass.data.get(DOMAIN, {}).pop("version", None)
+        hass.data.get(DOMAIN, {}).pop("ble_data", None)
+        # Keep settings/ble_subscribers for next setup but clean up
     if not hass.data.get("spatialHA") or not any(k != "version" and k != "websocket_registered" for k in hass.data.get("spatialHA", {})):
         hass.data.get("spatialHA", {}).pop("version", None)
 

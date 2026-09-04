@@ -1,9 +1,9 @@
 /**
- * spatialHA Panel - WebSocket architecture with BLE
+ * spatialHA Panel - WebSocket architecture with BLE + Settings
  * Frontend NEVER queries directly. All data goes via backend WebSocket
- * through Home Assistant: hass.callWS({type: "spatialHA/..."} ) -> backend -> HA
+ * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
-class spatialHAPanel extends HTMLElement {
+class SpatialHAPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
@@ -17,17 +17,28 @@ class spatialHAPanel extends HTMLElement {
     // BLE state
     this._bleLoading = false;
     this._bleError = null;
-    this._bleHasFetched = false;
-    this._bleData = null; // {scanners, sightings, devices}
+    this._bleData = null;
+    this._bleUnsub = null;
+    // Settings state
+    this._settings = null;
+    this._settingsLoading = false;
+    this._settingsError = null;
+    this._settingsSaving = false;
+    this._pendingInterval = null;
   }
 
   set hass(hass) {
+    const firstHass = !this._hass;
     this._hass = hass;
-    if (this._activeTab === "about" && !this._hasFetchedVersion && !this._loadingVersion) {
-      this._fetchVersion();
-    }
-    if (this._activeTab === "ble" && !this._bleHasFetched && !this._bleLoading) {
-      this._fetchBleData();
+    if (firstHass) {
+      // Fetch version and settings eagerly
+      if (this._activeTab === "about" && !this._hasFetchedVersion) this._fetchVersion();
+      if (this._activeTab === "settings" && !this._settings) this._fetchSettings();
+      if (this._activeTab === "ble") this._ensureBleSubscription();
+    } else {
+      if (this._activeTab === "about" && !this._hasFetchedVersion && !this._loadingVersion) this._fetchVersion();
+      if (this._activeTab === "ble" && !this._bleUnsub) this._ensureBleSubscription();
+      if (this._activeTab === "settings" && !this._settings && !this._settingsLoading) this._fetchSettings();
     }
   }
 
@@ -35,16 +46,20 @@ class spatialHAPanel extends HTMLElement {
     this._render();
   }
 
+  disconnectedCallback() {
+    if (this._bleUnsub) {
+      try { this._bleUnsub(); } catch (e) {}
+      this._bleUnsub = null;
+    }
+  }
+
   _switchTab(tab) {
     if (this._activeTab === tab) return;
     this._activeTab = tab;
     this._render();
-    if (tab === "about" && !this._hasFetchedVersion && this._hass && !this._loadingVersion) {
-      this._fetchVersion();
-    }
-    if (tab === "ble" && !this._bleHasFetched && this._hass && !this._bleLoading) {
-      this._fetchBleData();
-    }
+    if (tab === "about" && !this._hasFetchedVersion && this._hass && !this._loadingVersion) this._fetchVersion();
+    if (tab === "settings" && !this._settings && this._hass && !this._settingsLoading) this._fetchSettings();
+    if (tab === "ble" && this._hass) this._ensureBleSubscription();
   }
 
   _switchBleSubTab(sub) {
@@ -59,12 +74,7 @@ class spatialHAPanel extends HTMLElement {
     this._versionError = null;
     this._render();
     try {
-      let result;
-      try {
-        result = await this._hass.callWS({ type: "spatialHA/get_version" });
-      } catch (e) {
-        result = await this._hass.callWS({ type: "spatialHA/get_version" });
-      }
+      const result = await this._hass.callWS({ type: "spatialHA/get_version" });
       this._version = result.version;
       this._versionError = null;
     } catch (err) {
@@ -76,28 +86,100 @@ class spatialHAPanel extends HTMLElement {
     }
   }
 
-  async _fetchBleData() {
-    if (!this._hass || this._bleLoading) return;
-    this._bleLoading = true;
-    this._bleHasFetched = true;
-    this._bleError = null;
+  async _fetchSettings() {
+    if (!this._hass || this._settingsLoading) return;
+    this._settingsLoading = true;
+    this._settingsError = null;
     this._render();
     try {
-      let data;
-      try {
-        data = await this._hass.callWS({ type: "spatialHA/ble/get_data" });
-      } catch (e) {
-        try {
-          data = await this._hass.callWS({ type: "spatialHA/get_ble_data" });
-        } catch (e2) {
-          data = await this._hass.callWS({ type: "spatialHA/ble/get_data" });
-        }
+      const settings = await this._hass.callWS({ type: "spatialHA/settings/get" });
+      this._settings = settings;
+      this._pendingInterval = String(settings.update_interval ?? 1);
+    } catch (err) {
+      this._settingsError = err.message || String(err);
+    } finally {
+      this._settingsLoading = false;
+      this._render();
+    }
+  }
+
+  async _saveSettings() {
+    if (!this._hass || this._settingsSaving) return;
+    const val = parseFloat(this._pendingInterval);
+    if (isNaN(val) || val < 0.5 || val > 3600) {
+      this._settingsError = "Update Interval must be between 0.5 and 3600 seconds";
+      this._render();
+      return;
+    }
+    this._settingsSaving = true;
+    this._settingsError = null;
+    this._render();
+    try {
+      const res = await this._hass.callWS({ type: "spatialHA/settings/set", update_interval: val });
+      this._settings = res;
+      this._pendingInterval = String(res.update_interval);
+    } catch (err) {
+      this._settingsError = err.message || String(err);
+    } finally {
+      this._settingsSaving = false;
+      this._render();
+    }
+  }
+
+  _ensureBleSubscription() {
+    if (!this._hass || !this._hass.connection || this._bleUnsub) return;
+    // If already have data, keep it but ensure subscription for live pushes
+    this._bleLoading = true;
+    this._render();
+    try {
+      // Use subscribeMessage for push every Update Interval
+      const sub = this._hass.connection.subscribeMessage(
+        (msg) => {
+          // HA sends event_message with {type, data}
+          const data = msg.data || msg;
+          // data may be {type:"ble_update", data:{...}} or directly {scanners,...}
+          const payload = data.data || data;
+          if (payload && (payload.scanners || payload.devices || payload.sightings)) {
+            this._bleData = payload;
+            this._bleLoading = false;
+            this._bleError = null;
+            this._render();
+          }
+        },
+        { type: "spatialHA/ble/subscribe" }
+      );
+      // subscribeMessage may return Promise that resolves to unsub function
+      if (sub && typeof sub.then === "function") {
+        sub.then((unsub) => {
+          this._bleUnsub = unsub;
+          this._bleLoading = false;
+          // Also fetch once via get_data as fallback to populate immediately if push hasn't arrived
+          this._fetchBleOnce();
+        }).catch(() => {
+          this._bleLoading = false;
+          this._fetchBleOnce();
+        });
+      } else if (typeof sub === "function") {
+        this._bleUnsub = sub;
+        this._bleLoading = false;
+      } else {
+        this._bleLoading = false;
+        this._fetchBleOnce();
       }
+    } catch (e) {
+      this._bleLoading = false;
+      this._fetchBleOnce();
+    }
+  }
+
+  async _fetchBleOnce() {
+    if (!this._hass) return;
+    try {
+      const data = await this._hass.callWS({ type: "spatialHA/ble/get_data" });
       this._bleData = data;
       this._bleError = null;
     } catch (err) {
       this._bleError = err.message || String(err);
-      this._bleData = null;
     } finally {
       this._bleLoading = false;
       this._render();
@@ -105,15 +187,14 @@ class spatialHAPanel extends HTMLElement {
   }
 
   _renderBleScannerView() {
-    if (this._bleLoading) return `<p class="loading">Loading BLE devices via WebSocket...</p>`;
-    if (this._bleError) return `<p class="error">Error: ${this._bleError}</p><p><button id="ble-retry">Retry</button></p>`;
+    if (this._bleLoading) return `<p class="loading">Loading BLE devices via WebSocket… (auto-refresh every Update Interval)</p>`;
+    if (this._bleError) return `<p class="error">Error: ${this._esc(this._bleError)}</p><p><button id="ble-retry">Retry</button></p>`;
     if (!this._bleData || !this._bleData.sightings || this._bleData.sightings.length === 0) {
       const hasScanners = this._bleData && this._bleData.scanners && this._bleData.scanners.length > 0;
-      if (!hasScanners) return `<p>No Bluetooth scanners found. Ensure Bluetooth proxies are configured.</p><p><button id="ble-retry">Refresh</button></p>`;
-      return `<p>No BLE devices found by scanners.</p><p><button id="ble-retry">Refresh</button></p>`;
+      if (!hasScanners) return `<p>No Bluetooth scanners found. Ensure Bluetooth proxies are configured. Data auto-updates every Update Interval.</p><p><button id="ble-retry">Refresh</button></p>`;
+      return `<p>No BLE devices found by scanners. Auto-refreshing…</p><p><button id="ble-retry">Refresh</button></p>`;
     }
     const sightings = this._bleData.sightings;
-    // Build table: Scanner | MAC/UUID | Name | RSSI
     let rows = sightings.map(s => `
       <tr>
         <td>${this._esc(s.scanner_name || s.source)}</td>
@@ -122,9 +203,10 @@ class spatialHAPanel extends HTMLElement {
         <td>${s.rssi !== null && s.rssi !== undefined ? this._esc(String(s.rssi)) + " dBm" : "N/A"}</td>
       </tr>
     `).join("");
+    const updated = this._bleData.last_updated ? new Date(this._bleData.last_updated * 1000).toLocaleTimeString() : "";
     return `
       <div style="overflow:auto">
-        <p><em>Scanner view: every sighting (device × scanner). ${sightings.length} rows.</em> <button id="ble-refresh">Refresh</button></p>
+        <p><em>Scanner view: every sighting (device × scanner). ${sightings.length} rows. Auto-updates every ${this._esc(String(this._bleData.update_interval || this._settings?.update_interval || 1))}s ${updated ? " – last: " + updated : ""}</em></p>
         <table>
           <thead><tr><th>Scanner</th><th>MAC / UUID</th><th>Name</th><th>RSSI</th></tr></thead>
           <tbody>${rows}</tbody>
@@ -134,41 +216,35 @@ class spatialHAPanel extends HTMLElement {
   }
 
   _renderBleDeviceView() {
-    if (this._bleLoading) return `<p class="loading">Loading BLE devices via WebSocket...</p>`;
+    if (this._bleLoading) return `<p class="loading">Loading BLE devices via WebSocket… (auto-refresh every Update Interval)</p>`;
     if (this._bleError) return `<p class="error">Error: ${this._bleError}</p><p><button id="ble-retry">Retry</button></p>`;
     if (!this._bleData || !this._bleData.devices || this._bleData.devices.length === 0) {
-      return `<p>No BLE devices found.</p><p><button id="ble-retry">Refresh</button></p>`;
+      return `<p>No BLE devices found. Auto-refreshing…</p><p><button id="ble-retry">Refresh</button></p>`;
     }
     const scanners = this._bleData.scanners || [];
     const devices = this._bleData.devices;
     if (scanners.length === 0) {
-      // Fallback to simple list if no scanners
       let rows = devices.map(d => `
         <tr><td><code>${this._esc(d.address)}</code></td><td>${this._esc(d.name)}</td><td>N/A</td></tr>
       `).join("");
       return `
-        <p><em>Device view: ${devices.length} devices (no scanner info).</em> <button id="ble-refresh">Refresh</button></p>
+        <p><em>Device view: ${devices.length} devices (no scanner info). Auto-refreshing…</em></p>
         <table><thead><tr><th>MAC / UUID</th><th>Name</th><th>RSSI</th></tr></thead><tbody>${rows}</tbody></table>
       `;
     }
-    // Build header: fixed cols + per scanner
     let headerCols = `<th>MAC / UUID</th><th>Name</th>`;
     scanners.forEach(sc => {
       const label = this._esc(sc.name || sc.source);
       headerCols += `<th>${label}<br><small>${this._esc(sc.source)}</small></th>`;
     });
-    // Rows
     let rows = devices.map(dev => {
       let cols = `<td><code>${this._esc(dev.address)}</code></td><td>${this._esc(dev.name)}</td>`;
       const per = dev.per_scanner || {};
       scanners.forEach(sc => {
         const key = sc.source;
-        // per_scanner may have upper/lower variations, try case-insensitive
         let val = per[key];
         if (val === undefined) {
-          // try upper
           val = per[key.toUpperCase()] || per[key.toLowerCase()];
-          // also try to find any key case-insensitive
           if (val === undefined) {
             for (const k of Object.keys(per)) {
               if (k.toLowerCase() === key.toLowerCase()) { val = per[k]; break; }
@@ -183,10 +259,10 @@ class spatialHAPanel extends HTMLElement {
       });
       return `<tr>${cols}</tr>`;
     }).join("");
-
+    const updated = this._bleData.last_updated ? new Date(this._bleData.last_updated * 1000).toLocaleTimeString() : "";
     return `
       <div style="overflow:auto">
-        <p><em>Device view: ${devices.length} unique devices, ${scanners.length} scanners. Each column is a scanner (RSSI or N/A).</em> <button id="ble-refresh">Refresh</button></p>
+        <p><em>Device view: ${devices.length} unique devices, ${scanners.length} scanners. Each column is a scanner (RSSI or N/A). Auto-updates every ${this._esc(String(this._bleData.update_interval || this._settings?.update_interval || 1))}s ${updated ? " – last: " + updated : ""}</em></p>
         <table>
           <thead><tr>${headerCols}</tr></thead>
           <tbody>${rows}</tbody>
@@ -238,6 +314,10 @@ class spatialHAPanel extends HTMLElement {
       th { background: var(--divider-color, #f5f5f5); font-weight: 600; position: sticky; top: 0; }
       code { background: var(--divider-color, #eee); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
       small { font-weight: 400; color: var(--secondary-text-color, #666); }
+      .field { margin: 12px 0; }
+      .field label { display: block; font-weight: 500; margin-bottom: 6px; }
+      .field input { padding: 8px 10px; font-size: 14px; border: 1px solid var(--divider-color, #ccc); border-radius: 6px; width: 160px; }
+      .field button { margin-left: 8px; padding: 8px 14px; }
     `;
 
     const homeContent = `
@@ -263,12 +343,34 @@ class spatialHAPanel extends HTMLElement {
       bleContent = `
         <div class="card">
           <h2>BLE</h2>
-          <p>Bluetooth devices found by Bluetooth proxies (via backend WebSocket straight to Home Assistant).</p>
+          <p>Bluetooth devices found by Bluetooth proxies (via backend WebSocket straight to Home Assistant). Auto-updates every Update Interval.</p>
           ${subNav}
           <div>${bleInner}</div>
         </div>
       `;
     }
+
+    let settingsInner = "";
+    if (this._settingsLoading) settingsInner = `<p class="loading">Loading settings…</p>`;
+    else if (this._settingsError) settingsInner = `<p class="error">Error: ${this._esc(this._settingsError)}</p><p><button id="settings-retry">Retry</button></p>`;
+    else if (this._settings) {
+      settingsInner = `
+        <div class="field">
+          <label for="interval-input">Update Interval (seconds, default 1)</label>
+          <input id="interval-input" type="number" min="0.5" max="3600" step="0.5" value="${this._esc(this._pendingInterval)}" />
+          <button id="settings-save" ${this._settingsSaving ? "disabled" : ""}>${this._settingsSaving ? "Saving…" : "Save"}</button>
+        </div>
+        <p><small>Backend polls BLE data every Update Interval even without frontend and pushes to BLE tab. Stored in <code>.storage/spatialHA.settings</code> and <code>.storage/spatialHA.ble_data</code>.</small></p>
+      `;
+    } else {
+      settingsInner = `<p class="loading">No settings loaded.</p><p><button id="settings-retry">Retry</button></p>`;
+    }
+    const settingsContent = `
+      <div class="card">
+        <h2>Settings</h2>
+        ${settingsInner}
+      </div>
+    `;
 
     let aboutInner = "";
     if (this._loadingVersion) {
@@ -290,6 +392,7 @@ class spatialHAPanel extends HTMLElement {
     let mainInner = "";
     if (this._activeTab === "home") mainInner = homeContent;
     else if (this._activeTab === "ble") mainInner = bleContent;
+    else if (this._activeTab === "settings") mainInner = settingsContent;
     else if (this._activeTab === "about") mainInner = aboutContent;
 
     this.shadowRoot.innerHTML = `
@@ -298,6 +401,7 @@ class spatialHAPanel extends HTMLElement {
         <div class="tabs" role="tablist">
           <button role="tab" aria-selected="${this._activeTab === "home"}" data-tab="home" class="${this._activeTab === "home" ? "active" : ""}">Home</button>
           <button role="tab" aria-selected="${this._activeTab === "ble"}" data-tab="ble" class="${this._activeTab === "ble" ? "active" : ""}">BLE</button>
+          <button role="tab" aria-selected="${this._activeTab === "settings"}" data-tab="settings" class="${this._activeTab === "settings" ? "active" : ""}">Settings</button>
           <button role="tab" aria-selected="${this._activeTab === "about"}" data-tab="about" class="${this._activeTab === "about" ? "active" : ""}">About</button>
         </div>
         <div class="tab-content">
@@ -324,27 +428,28 @@ class spatialHAPanel extends HTMLElement {
     const bleRetry = this.shadowRoot.getElementById("ble-retry");
     if (bleRetry) {
       bleRetry.addEventListener("click", () => {
-        this._bleHasFetched = false;
+        if (this._bleUnsub) { try { this._bleUnsub(); } catch(e){} this._bleUnsub = null; }
         this._bleData = null;
         this._bleError = null;
-        this._fetchBleData();
+        this._ensureBleSubscription();
       });
     }
-    const bleRefresh = this.shadowRoot.getElementById("ble-refresh");
-    if (bleRefresh) {
-      bleRefresh.addEventListener("click", () => {
-        this._bleHasFetched = false;
-        this._bleData = null;
-        this._bleError = null;
-        this._fetchBleData();
-      });
+    const settingsRetry = this.shadowRoot.getElementById("settings-retry");
+    if (settingsRetry) {
+      settingsRetry.addEventListener("click", () => this._fetchSettings());
+    }
+    const saveBtn = this.shadowRoot.getElementById("settings-save");
+    if (saveBtn) {
+      saveBtn.addEventListener("click", () => this._saveSettings());
+    }
+    const intervalInput = this.shadowRoot.getElementById("interval-input");
+    if (intervalInput) {
+      intervalInput.addEventListener("input", (e) => { this._pendingInterval = e.target.value; });
+      intervalInput.addEventListener("change", (e) => { this._pendingInterval = e.target.value; });
     }
   }
 }
 
 if (!customElements.get("spatialHA-panel")) {
-  customElements.define("spatialHA-panel", spatialHAPanel);
-}
-if (!customElements.get("spatialHA-panel")) {
-  customElements.define("spatialHA-panel", spatialHAPanel);
+  customElements.define("spatialHA-panel", SpatialHAPanel);
 }
