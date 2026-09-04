@@ -195,10 +195,13 @@ async def _async_start_ble_polling(hass: HomeAssistant) -> None:
     # Immediate first update (even if no frontend)
     await _async_update_ble_data_and_push(hass)
 
-    # Schedule interval
+    # Schedule interval - wrap to capture hass, interval callback receives datetime not hass
     try:
+        async def _interval_callback(now: datetime.datetime) -> None:
+            await _async_update_ble_data_and_push(hass)
+
         unsub = async_track_time_interval(
-            hass, _async_update_ble_data_and_push, datetime.timedelta(seconds=interval)
+            hass, _interval_callback, datetime.timedelta(seconds=interval)
         )
         hass.data.setdefault(DOMAIN, {})["ble_unsub_interval"] = unsub
         LOGGER.info("Started BLE polling every %s seconds", interval)
@@ -282,7 +285,12 @@ async def _async_remove_all_spatialHA_panels(hass: HomeAssistant) -> None:
 
     for url in set(to_remove):
         try:
-            res = _frontend_remove(hass, url)  # type: ignore[call-arg]
+            # Use warn_if_unknown=False to avoid log spam for unknown panels
+            try:
+                res = _frontend_remove(hass, url, warn_if_unknown=False)  # type: ignore[call-arg]
+            except TypeError:
+                # Fallback for older signature without warn_if_unknown
+                res = _frontend_remove(hass, url)  # type: ignore[call-arg]
             if inspect.isawaitable(res):
                 await res
             LOGGER.debug("Removed existing spatialHA panel %s", url)
