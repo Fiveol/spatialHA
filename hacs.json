@@ -1,5 +1,5 @@
 {
-    "name": "Integration blueprint",
-    "homeassistant": "2026.6.4",
+    "name": "spatialHA",
+    "homeassistant": "2026.9.0b6",
     "hacs": "2.0.5"
 }
