@@ -81,9 +81,66 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
+async def _async_remove_all_spatialha_panels(hass: HomeAssistant) -> None:
+    """Remove every spatialha panel that may exist (handles duplicates)."""
+    import inspect
+
+    try:
+        from homeassistant.components.frontend import async_remove_panel as _frontend_remove
+    except ImportError:
+        _frontend_remove = getattr(hass.components.frontend, "async_remove_panel", None)  # type: ignore[attr-defined]
+    if _frontend_remove is None:
+        return
+
+    # Try to get frontend panels registry
+    panels = {}
+    try:
+        from homeassistant.components.frontend import DATA_PANELS as _DATA_PANELS
+
+        panels = hass.data.get(_DATA_PANELS, {})  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001
+        panels = {}
+    if not panels:
+        panels = hass.data.get("frontend_panels", {})  # fallback
+
+    to_remove: list[str] = []
+    # Check all registered panels
+    for url, panel in list(panels.items()):
+        try:
+            title = getattr(panel, "sidebar_title", None) or getattr(panel, "title", None) or ""
+            comp = getattr(panel, "component_name", "") or ""
+            furl = getattr(panel, "frontend_url_path", url) or url
+            if (
+                url.lower() in ("spatialha", "spatialha-panel")
+                or furl.lower() in ("spatialha", "spatialha-panel")
+                or title == PANEL_TITLE
+                or "spatialha" in comp.lower()
+                or "spatialha" in url.lower()
+            ):
+                to_remove.append(url)
+        except Exception:  # noqa: BLE001
+            continue
+    # Always try known variants
+    for variant in ("spatialha", "spatialHA", "spatialha-panel", "spatialHA-panel"):
+        if variant not in to_remove:
+            to_remove.append(variant)
+
+    for url in set(to_remove):
+        try:
+            res = _frontend_remove(hass, url)  # type: ignore[call-arg]
+            if inspect.isawaitable(res):
+                await res
+            LOGGER.debug("Removed existing spatialha panel %s", url)
+        except Exception as err:  # noqa: BLE001
+            LOGGER.debug("Could not remove panel %s: %s", url, err)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up spatialHA from a config entry and register sidebar panel."""
     LOGGER.debug("Setting up spatialHA entry %s", entry.entry_id)
+
+    # Remove any lingering panels from previous installs/duplicates before registering
+    await _async_remove_all_spatialha_panels(hass)
 
     try:
         from .websocket import async_register_websocket
@@ -160,28 +217,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     LOGGER.info("Registered spatialHA panel at /%s with js_url %s", PANEL_URL_PATH, js_url)
 
-    # Also register capital URL path as alias for backward compat (case-sensitive FS)
-    try:
-        await _register_panel(
-            component_name="custom",
-            sidebar_title=PANEL_TITLE,
-            sidebar_icon=PANEL_ICON,
-            frontend_url_path="spatialHA",
-            config={
-                "_panel_custom": {
-                    "name": "spatialHA-panel",
-                    "js_url": js_url,
-                    "embed_iframe": False,
-                    "trust_external": False,
-                }
-            },
-            require_admin=False,
-        )
-    except Exception:  # noqa: BLE001
-        pass
-
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {"panel_registered": True}
+    # Keep alias for backwards compat where old entries used capital domain
     hass.data.setdefault("spatialHA", {})
     hass.data["spatialHA"][entry.entry_id] = {"panel_registered": True}
 
@@ -190,28 +228,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry and remove panel."""
-    import inspect
-
-    try:
-        from homeassistant.components.frontend import async_remove_panel as _frontend_remove
-    except ImportError:
-        _frontend_remove = getattr(hass.components.frontend, "async_remove_panel", None)  # type: ignore[attr-defined]
-
-    async def _remove(path: str):
-        if _frontend_remove is None:
-            return
-        try:
-            res = _frontend_remove(hass, path)
-            if inspect.isawaitable(res):
-                await res
-            LOGGER.debug("Removed spatialHA panel %s", path)
-        except Exception as err:  # noqa: BLE001
-            LOGGER.debug("Could not remove panel %s: %s", path, err)
-
-    await _remove(PANEL_URL_PATH)
-    await _remove("spatialHA")
+    await _async_remove_all_spatialha_panels(hass)
 
     hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     hass.data.get("spatialHA", {}).pop(entry.entry_id, None)
+
+    # If no more entries, clean up version cache
+    if not hass.data.get(DOMAIN) or not any(k != "version" and k != "websocket_registered" for k in hass.data.get(DOMAIN, {})):
+        hass.data.get(DOMAIN, {}).pop("version", None)
+    if not hass.data.get("spatialHA") or not any(k != "version" and k != "websocket_registered" for k in hass.data.get("spatialHA", {})):
+        hass.data.get("spatialHA", {}).pop("version", None)
 
     return True
