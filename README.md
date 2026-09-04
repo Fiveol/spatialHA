@@ -1,1 +1,1 @@
-# SpatialHA
+# spatialHA
