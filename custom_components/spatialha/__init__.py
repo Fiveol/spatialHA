@@ -128,12 +128,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Use direct import for frontend to avoid deprecated hass.components.frontend
     try:
-        from homeassistant.components.frontend import async_register_built_in_panel
+        from homeassistant.components.frontend import async_register_built_in_panel as _frontend_register
     except ImportError:
-        async_register_built_in_panel = hass.components.frontend.async_register_built_in_panel  # type: ignore[attr-defined]
+        _frontend_register = getattr(hass.components.frontend, "async_register_built_in_panel", None)  # type: ignore[attr-defined]
 
-    await async_register_built_in_panel(
-        hass,
+    # Helper to handle both async and sync variants
+    import inspect
+
+    async def _register_panel(**kwargs):
+        if _frontend_register is None:
+            return
+        res = _frontend_register(hass, **kwargs)
+        if inspect.isawaitable(res):
+            await res
+
+    await _register_panel(
         component_name="custom",
         sidebar_title=PANEL_TITLE,
         sidebar_icon=PANEL_ICON,
@@ -153,8 +162,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Also register capital URL path as alias for backward compat (case-sensitive FS)
     try:
-        await async_register_built_in_panel(
-            hass,
+        await _register_panel(
             component_name="custom",
             sidebar_title=PANEL_TITLE,
             sidebar_icon=PANEL_ICON,
@@ -182,20 +190,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry and remove panel."""
-    try:
-        from homeassistant.components.frontend import async_remove_panel
-    except ImportError:
-        async_remove_panel = hass.components.frontend.async_remove_panel  # type: ignore[attr-defined]
+    import inspect
 
     try:
-        async_remove_panel(hass, PANEL_URL_PATH)
-        LOGGER.debug("Removed spatialHA panel")
-    except Exception as err:  # noqa: BLE001
-        LOGGER.debug("Could not remove panel: %s", err)
-    try:
-        async_remove_panel(hass, "spatialHA")
-    except Exception:  # noqa: BLE001
-        pass
+        from homeassistant.components.frontend import async_remove_panel as _frontend_remove
+    except ImportError:
+        _frontend_remove = getattr(hass.components.frontend, "async_remove_panel", None)  # type: ignore[attr-defined]
+
+    async def _remove(path: str):
+        if _frontend_remove is None:
+            return
+        try:
+            res = _frontend_remove(hass, path)
+            if inspect.isawaitable(res):
+                await res
+            LOGGER.debug("Removed spatialHA panel %s", path)
+        except Exception as err:  # noqa: BLE001
+            LOGGER.debug("Could not remove panel %s: %s", path, err)
+
+    await _remove(PANEL_URL_PATH)
+    await _remove("spatialHA")
 
     hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     hass.data.get("spatialHA", {}).pop(entry.entry_id, None)
