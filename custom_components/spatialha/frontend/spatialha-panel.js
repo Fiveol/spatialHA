@@ -1,5 +1,5 @@
 /**
- * spatialHA Panel - WebSocket architecture with BLE + Settings
+ * spatialHA Panel - WebSocket architecture with BLE + Settings + Targets
  * Frontend NEVER queries directly. All data goes via backend WebSocket
  * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
@@ -25,20 +25,29 @@ class SpatialHAPanel extends HTMLElement {
     this._settingsError = null;
     this._settingsSaving = false;
     this._pendingInterval = null;
+    // Targets state
+    this._targets = [];
+    this._targetsLoading = false;
+    this._targetsError = null;
+    this._targetsUnsub = null;
+    this._editingTarget = null; // target being edited, or null for new
+    this._showAddForm = false;
+    this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [] };
   }
 
   set hass(hass) {
     const firstHass = !this._hass;
     this._hass = hass;
     if (firstHass) {
-      // Fetch version and settings eagerly
       if (this._activeTab === "about" && !this._hasFetchedVersion) this._fetchVersion();
       if (this._activeTab === "settings" && !this._settings) this._fetchSettings();
       if (this._activeTab === "ble") this._ensureBleSubscription();
+      if (this._activeTab === "targets") this._ensureTargetsSubscription();
     } else {
       if (this._activeTab === "about" && !this._hasFetchedVersion && !this._loadingVersion) this._fetchVersion();
       if (this._activeTab === "ble" && !this._bleUnsub) this._ensureBleSubscription();
       if (this._activeTab === "settings" && !this._settings && !this._settingsLoading) this._fetchSettings();
+      if (this._activeTab === "targets" && !this._targetsUnsub) this._ensureTargetsSubscription();
     }
   }
 
@@ -47,10 +56,8 @@ class SpatialHAPanel extends HTMLElement {
   }
 
   disconnectedCallback() {
-    if (this._bleUnsub) {
-      try { this._bleUnsub(); } catch (e) {}
-      this._bleUnsub = null;
-    }
+    if (this._bleUnsub) { try { this._bleUnsub(); } catch(e){} this._bleUnsub = null; }
+    if (this._targetsUnsub) { try { this._targetsUnsub(); } catch(e){} this._targetsUnsub = null; }
   }
 
   _switchTab(tab) {
@@ -60,6 +67,7 @@ class SpatialHAPanel extends HTMLElement {
     if (tab === "about" && !this._hasFetchedVersion && this._hass && !this._loadingVersion) this._fetchVersion();
     if (tab === "settings" && !this._settings && this._hass && !this._settingsLoading) this._fetchSettings();
     if (tab === "ble" && this._hass) this._ensureBleSubscription();
+    if (tab === "targets" && this._hass) this._ensureTargetsSubscription();
   }
 
   _switchBleSubTab(sub) {
@@ -128,16 +136,12 @@ class SpatialHAPanel extends HTMLElement {
 
   _ensureBleSubscription() {
     if (!this._hass || !this._hass.connection || this._bleUnsub) return;
-    // If already have data, keep it but ensure subscription for live pushes
     this._bleLoading = true;
     this._render();
     try {
-      // Use subscribeMessage for push every Update Interval
       const sub = this._hass.connection.subscribeMessage(
         (msg) => {
-          // HA sends event_message with {type, data}
           const data = msg.data || msg;
-          // data may be {type:"ble_update", data:{...}} or directly {scanners,...}
           const payload = data.data || data;
           if (payload && (payload.scanners || payload.devices || payload.sightings)) {
             this._bleData = payload;
@@ -148,12 +152,10 @@ class SpatialHAPanel extends HTMLElement {
         },
         { type: "spatialHA/ble/subscribe" }
       );
-      // subscribeMessage may return Promise that resolves to unsub function
       if (sub && typeof sub.then === "function") {
         sub.then((unsub) => {
           this._bleUnsub = unsub;
           this._bleLoading = false;
-          // Also fetch once via get_data as fallback to populate immediately if push hasn't arrived
           this._fetchBleOnce();
         }).catch(() => {
           this._bleLoading = false;
@@ -184,6 +186,147 @@ class SpatialHAPanel extends HTMLElement {
       this._bleLoading = false;
       this._render();
     }
+  }
+
+  _ensureTargetsSubscription() {
+    if (!this._hass || !this._hass.connection || this._targetsUnsub) return;
+    this._targetsLoading = true;
+    this._render();
+    try {
+      const sub = this._hass.connection.subscribeMessage(
+        (msg) => {
+          const data = msg.data || msg;
+          const payload = data.targets ? data : (data.data || data);
+          const targets = payload.targets || payload;
+          if (Array.isArray(targets) || Array.isArray(payload.targets)) {
+            this._targets = payload.targets || targets;
+            this._targetsLoading = false;
+            this._targetsError = null;
+            this._render();
+          } else if (payload && payload.targets) {
+            this._targets = payload.targets;
+            this._targetsLoading = false;
+            this._render();
+          }
+        },
+        { type: "spatialHA/targets/subscribe" }
+      );
+      if (sub && typeof sub.then === "function") {
+        sub.then((unsub) => {
+          this._targetsUnsub = unsub;
+          // Also fetch once
+          this._fetchTargetsOnce();
+        }).catch(() => {
+          this._fetchTargetsOnce();
+        });
+      } else if (typeof sub === "function") {
+        this._targetsUnsub = sub;
+      } else {
+        this._fetchTargetsOnce();
+      }
+    } catch (e) {
+      this._fetchTargetsOnce();
+    }
+  }
+
+  async _fetchTargetsOnce() {
+    if (!this._hass) return;
+    try {
+      const res = await this._hass.callWS({ type: "spatialHA/targets/list" });
+      this._targets = res.targets || res || [];
+      this._targetsError = null;
+    } catch (err) {
+      this._targetsError = err.message || String(err);
+    } finally {
+      this._targetsLoading = false;
+      this._render();
+    }
+  }
+
+  async _createTarget() {
+    if (!this._hass) return;
+    const name = this._targetForm.name.trim();
+    if (!name) { alert("Name required"); return; }
+    try {
+      await this._hass.callWS({
+        type: "spatialHA/targets/create",
+        name: name,
+        target_type: this._targetForm.type,
+        icon: this._targetForm.icon,
+        ble_devices: this._targetForm.ble_devices,
+      });
+      this._showAddForm = false;
+      this._editingTarget = null;
+      this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [] };
+      // Targets will be pushed via subscription, but also fetch
+      this._fetchTargetsOnce();
+    } catch (e) {
+      alert("Failed to create target: " + (e.message || String(e)));
+    }
+  }
+
+  async _updateTarget() {
+    if (!this._hass || !this._editingTarget) return;
+    try {
+      await this._hass.callWS({
+        type: "spatialHA/targets/update",
+        target_id: this._editingTarget.id,
+        name: this._targetForm.name.trim() || this._editingTarget.name,
+        target_type: this._targetForm.type,
+        icon: this._targetForm.icon,
+        ble_devices: this._targetForm.ble_devices,
+      });
+      this._editingTarget = null;
+      this._showAddForm = false;
+      this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [] };
+      this._fetchTargetsOnce();
+    } catch (e) {
+      alert("Failed to update target: " + (e.message || String(e)));
+    }
+  }
+
+  async _deleteTarget(id) {
+    if (!confirm("Delete target?")) return;
+    try {
+      await this._hass.callWS({ type: "spatialHA/targets/delete", target_id: id });
+      this._fetchTargetsOnce();
+    } catch (e) {
+      alert("Failed to delete: " + (e.message || String(e)));
+    }
+  }
+
+  _startEdit(target) {
+    this._editingTarget = target;
+    this._showAddForm = true;
+    this._targetForm = {
+      name: target.name || "",
+      type: target.type || "Other",
+      icon: target.icon || (target.type === "Person" ? "mdi:account" : "mdi:help-circle"),
+      ble_devices: [...(target.ble_devices || [])],
+    };
+    this._render();
+  }
+
+  _startAdd() {
+    this._editingTarget = null;
+    this._showAddForm = true;
+    this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [] };
+    this._render();
+  }
+
+  _cancelForm() {
+    this._showAddForm = false;
+    this._editingTarget = null;
+    this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [] };
+    this._render();
+  }
+
+  _toggleBleDevice(addr) {
+    const upper = String(addr).toUpperCase();
+    const idx = this._targetForm.ble_devices.findIndex(a => String(a).toUpperCase() === upper);
+    if (idx >= 0) this._targetForm.ble_devices.splice(idx, 1);
+    else this._targetForm.ble_devices.push(upper);
+    this._render();
   }
 
   _renderBleScannerView() {
@@ -259,14 +402,96 @@ class SpatialHAPanel extends HTMLElement {
       });
       return `<tr>${cols}</tr>`;
     }).join("");
-    const updated = this._bleData.last_updated ? new Date(this._bleData.last_updated * 1000).toLocaleTimeString() : "";
+
     return `
       <div style="overflow:auto">
-        <p><em>Device view: ${devices.length} unique devices, ${scanners.length} scanners. Each column is a scanner (RSSI or N/A). Auto-updates every ${this._esc(String(this._bleData.update_interval || this._settings?.update_interval || 1))}s ${updated ? " – last: " + updated : ""}</em></p>
+        <p><em>Device view: ${devices.length} unique devices, ${scanners.length} scanners. Each column is a scanner (RSSI or N/A). Auto-updates every ${this._esc(String(this._bleData.update_interval || this._settings?.update_interval || 1))}s ${updated ? " – last: " + new Date(this._bleData.last_updated * 1000).toLocaleTimeString() : ""}</em></p>
         <table>
           <thead><tr>${headerCols}</tr></thead>
           <tbody>${rows}</tbody>
         </table>
+      </div>
+    `;
+  }
+
+  _renderTargets() {
+    if (this._targetsLoading) return `<p class="loading">Loading targets…</p>`;
+    if (this._targetsError) return `<p class="error">Error: ${this._esc(this._targetsError)}</p><p><button id="targets-retry">Retry</button></p>`;
+
+    let listHtml = "";
+    if (!this._targets || this._targets.length === 0) {
+      listHtml = `<p>No targets yet. Add a Person or Other target and assign BLE devices.</p>`;
+    } else {
+      listHtml = `<table><thead><tr><th>Name</th><th>Type</th><th>Icon</th><th>BLE Devices</th><th>State</th><th>Actions</th></tr></thead><tbody>`;
+      this._targets.forEach(t => {
+        const bleList = (t.ble_devices || []).map(a => `<code>${this._esc(a)}</code>`).join(", ") || "<em>none</em>";
+        const state = this._esc(t.state || "unknown");
+        const stateColor = state === "home" ? "var(--success-color, green)" : "var(--error-color, #db4437)";
+        listHtml += `<tr>
+          <td>${this._esc(t.name)} <small>(${this._esc(t.id.slice(0,8))})</small></td>
+          <td>${this._esc(t.type)} </td>
+          <td><ha-icon icon="${this._esc(t.icon)}"></ha-icon> <code>${this._esc(t.icon)}</code></td>
+          <td>${bleList}</td>
+          <td style="color:${stateColor}; font-weight:600">${state}</td>
+          <td><button data-edit="${this._esc(t.id)}">Edit</button> <button data-delete="${this._esc(t.id)}">Delete</button></td>
+        </tr>`;
+      });
+      listHtml += `</tbody></table>`;
+    }
+
+    let formHtml = "";
+    if (this._showAddForm) {
+      const isEdit = !!this._editingTarget;
+      // Available BLE devices for assignment
+      let bleOptions = "";
+      const available = (this._bleData && (this._bleData.devices || [])) || [];
+      // Also include sightings addresses that may not be in devices? Use devices
+      const allAddrs = new Set();
+      available.forEach(d => allAddrs.add(d.address));
+      // Also add any ble_devices already assigned that may not be in available
+      (this._targetForm.ble_devices || []).forEach(a => allAddrs.add(a));
+      if (allAddrs.size === 0) {
+        bleOptions = `<p><em>No BLE devices discovered yet. Assign manually or wait for scanner.</em></p>`;
+      } else {
+        bleOptions = `<div style="max-height:180px; overflow:auto; border:1px solid var(--divider-color, #ccc); padding:8px; border-radius:6px;">`;
+        allAddrs.forEach(addr => {
+          const upper = String(addr).toUpperCase();
+          const checked = this._targetForm.ble_devices.some(a => String(a).toUpperCase() === upper) ? "checked" : "";
+          // Find name
+          let name = upper;
+          const dev = available.find(d => String(d.address).toUpperCase() === upper);
+          if (dev && dev.name) name = `${dev.name} (${upper})`;
+          bleOptions += `<label style="display:block; margin:4px 0;"><input type="checkbox" data-ble-addr="${this._esc(upper)}" ${checked}> <code>${this._esc(upper)}</code> ${this._esc(name !== upper ? " - " + dev.name : "")}</label>`;
+        });
+        bleOptions += `</div>`;
+        // Also manual input
+        bleOptions += `<p><small>Or add custom MAC/UUID:</small> <input id="ble-custom" placeholder="AA:BB:CC:DD:EE:FF" style="width:200px"> <button id="ble-add-custom">Add</button></p>`;
+      }
+
+      formHtml = `
+        <div style="border:1px solid var(--divider-color, #ccc); padding:16px; border-radius:8px; margin:12px 0; background: var(--card-background-color, #fafafa);">
+          <h3>${isEdit ? "Edit" : "Add"} Target</h3>
+          <div class="field"><label>Name</label><input id="target-name" value="${this._esc(this._targetForm.name)}" placeholder="e.g. Alice" /></div>
+          <div class="field"><label>Type</label>
+            <select id="target-type">
+              <option value="Person" ${this._targetForm.type === "Person" ? "selected" : ""}>Person</option>
+              <option value="Other" ${this._targetForm.type === "Other" ? "selected" : ""}>Other</option>
+            </select>
+          </div>
+          <div class="field"><label>Icon (mdi:*)</label><input id="target-icon" value="${this._esc(this._targetForm.icon)}" placeholder="mdi:account" /></div>
+          <div class="field"><label>BLE Devices (one or many, state Home only if all seen; any Away => away)</label>${bleOptions}</div>
+          <p><button id="target-save">${isEdit ? "Update" : "Create"}</button> <button id="target-cancel">Cancel</button></p>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="card">
+        <h2>Targets</h2>
+        <p>Track anything with BLE devices. Person/Other are cosmetic (icon). Assign one or many BLE devices; state is <code>home</code> only if all assigned devices are seen, otherwise <code>not_home</code> (any Away => away). Each target creates a Device + Device Tracker entity.</p>
+        <p><button id="target-add">Add Target</button> <button id="targets-refresh">Refresh</button></p>
+        ${formHtml}
+        ${listHtml}
       </div>
     `;
   }
@@ -280,7 +505,7 @@ class SpatialHAPanel extends HTMLElement {
     const style = `
       :host { display: block; font-family: var(--paper-font-body1_-_font-family, sans-serif); }
       .container { padding: 16px; max-width: 1100px; margin: 0 auto; }
-      .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--divider-color, #e0e0e0); margin-bottom: 16px; }
+      .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--divider-color, #e0e0e0); margin-bottom: 16px; flex-wrap: wrap; }
       .tabs button {
         appearance: none; border: none; background: none;
         padding: 12px 20px; font-size: 14px; font-weight: 500;
@@ -316,8 +541,9 @@ class SpatialHAPanel extends HTMLElement {
       small { font-weight: 400; color: var(--secondary-text-color, #666); }
       .field { margin: 12px 0; }
       .field label { display: block; font-weight: 500; margin-bottom: 6px; }
-      .field input { padding: 8px 10px; font-size: 14px; border: 1px solid var(--divider-color, #ccc); border-radius: 6px; width: 160px; }
+      .field input, .field select { padding: 8px 10px; font-size: 14px; border: 1px solid var(--divider-color, #ccc); border-radius: 6px; width: 240px; }
       .field button { margin-left: 8px; padding: 8px 14px; }
+      ha-icon { --mdc-icon-size: 18px; vertical-align: middle; }
     `;
 
     const homeContent = `
@@ -360,7 +586,7 @@ class SpatialHAPanel extends HTMLElement {
           <input id="interval-input" type="number" min="0.5" max="3600" step="0.5" value="${this._esc(this._pendingInterval)}" />
           <button id="settings-save" ${this._settingsSaving ? "disabled" : ""}>${this._settingsSaving ? "Saving…" : "Save"}</button>
         </div>
-        <p><small>Backend polls BLE data every Update Interval even without frontend and pushes to BLE tab. Stored in <code>.storage/spatialHA.settings</code> and <code>.storage/spatialHA.ble_data</code>.</small></p>
+        <p><small>Backend polls BLE data every Update Interval even without frontend and pushes to BLE tab. Stored in <code>.storage/spatialHA/settings</code> and <code>.storage/spatialHA/ble_data</code>.</small></p>
       `;
     } else {
       settingsInner = `<p class="loading">No settings loaded.</p><p><button id="settings-retry">Retry</button></p>`;
@@ -371,6 +597,11 @@ class SpatialHAPanel extends HTMLElement {
         ${settingsInner}
       </div>
     `;
+
+    let targetsContent = "";
+    if (this._activeTab === "targets") {
+      targetsContent = this._renderTargets();
+    }
 
     let aboutInner = "";
     if (this._loadingVersion) {
@@ -392,6 +623,7 @@ class SpatialHAPanel extends HTMLElement {
     let mainInner = "";
     if (this._activeTab === "home") mainInner = homeContent;
     else if (this._activeTab === "ble") mainInner = bleContent;
+    else if (this._activeTab === "targets") mainInner = targetsContent;
     else if (this._activeTab === "settings") mainInner = settingsContent;
     else if (this._activeTab === "about") mainInner = aboutContent;
 
@@ -401,6 +633,7 @@ class SpatialHAPanel extends HTMLElement {
         <div class="tabs" role="tablist">
           <button role="tab" aria-selected="${this._activeTab === "home"}" data-tab="home" class="${this._activeTab === "home" ? "active" : ""}">Home</button>
           <button role="tab" aria-selected="${this._activeTab === "ble"}" data-tab="ble" class="${this._activeTab === "ble" ? "active" : ""}">BLE</button>
+          <button role="tab" aria-selected="${this._activeTab === "targets"}" data-tab="targets" class="${this._activeTab === "targets" ? "active" : ""}">Targets</button>
           <button role="tab" aria-selected="${this._activeTab === "settings"}" data-tab="settings" class="${this._activeTab === "settings" ? "active" : ""}">Settings</button>
           <button role="tab" aria-selected="${this._activeTab === "about"}" data-tab="about" class="${this._activeTab === "about" ? "active" : ""}">About</button>
         </div>
@@ -447,6 +680,61 @@ class SpatialHAPanel extends HTMLElement {
       intervalInput.addEventListener("input", (e) => { this._pendingInterval = e.target.value; });
       intervalInput.addEventListener("change", (e) => { this._pendingInterval = e.target.value; });
     }
+    // Targets
+    const addBtn = this.shadowRoot.getElementById("target-add");
+    if (addBtn) addBtn.addEventListener("click", () => this._startAdd());
+    const refreshBtn = this.shadowRoot.getElementById("targets-refresh");
+    if (refreshBtn) refreshBtn.addEventListener("click", () => this._fetchTargetsOnce());
+    const cancelBtn = this.shadowRoot.getElementById("target-cancel");
+    if (cancelBtn) cancelBtn.addEventListener("click", () => this._cancelForm());
+    const saveTargetBtn = this.shadowRoot.getElementById("target-save");
+    if (saveTargetBtn) {
+      saveTargetBtn.addEventListener("click", () => {
+        if (this._editingTarget) this._updateTarget();
+        else this._createTarget();
+      });
+    }
+    this.shadowRoot.querySelectorAll("[data-edit]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-edit");
+        const t = this._targets.find(x => x.id === id);
+        if (t) this._startEdit(t);
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-delete]").forEach(btn => {
+      btn.addEventListener("click", () => this._deleteTarget(btn.getAttribute("data-delete")));
+    });
+    this.shadowRoot.querySelectorAll("[data-ble-addr]").forEach(cb => {
+      cb.addEventListener("change", () => {
+        const addr = cb.getAttribute("data-ble-addr");
+        this._toggleBleDevice(addr);
+      });
+    });
+    const customInput = this.shadowRoot.getElementById("ble-custom");
+    const customBtn = this.shadowRoot.getElementById("ble-add-custom");
+    if (customBtn && customInput) {
+      customBtn.addEventListener("click", () => {
+        const val = customInput.value.trim().toUpperCase();
+        if (!val) return;
+        if (!this._targetForm.ble_devices.includes(val)) this._targetForm.ble_devices.push(val);
+        customInput.value = "";
+        this._render();
+      });
+    }
+    const nameInput = this.shadowRoot.getElementById("target-name");
+    if (nameInput) nameInput.addEventListener("input", e => { this._targetForm.name = e.target.value; });
+    const typeSelect = this.shadowRoot.getElementById("target-type");
+    if (typeSelect) typeSelect.addEventListener("change", e => {
+      this._targetForm.type = e.target.value;
+      if (!this._editingTarget) {
+        this._targetForm.icon = e.target.value === "Person" ? "mdi:account" : "mdi:help-circle";
+        this._render();
+      } else {
+        this._targetForm.type = e.target.value;
+      }
+    });
+    const iconInput = this.shadowRoot.getElementById("target-icon");
+    if (iconInput) iconInput.addEventListener("input", e => { this._targetForm.icon = e.target.value; });
   }
 }
 
