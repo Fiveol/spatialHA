@@ -18,11 +18,17 @@ PANEL_ICON = "mdi:account"
 PANEL_URL_PATH = "spatialha"
 
 
-def _get_version(hass: HomeAssistant | None = None) -> str:
-    """Get version for cache breaking."""
+def _get_version_sync() -> str:
+    """Blocking version lookup - run in executor."""
     try:
         return version(DOMAIN)
     except PackageNotFoundError:
+        pass
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return version("spatialHA")
+    except Exception:  # noqa: BLE001
         pass
     try:
         manifest_path = pathlib.Path(__file__).parent / "manifest.json"
@@ -30,6 +36,38 @@ def _get_version(hass: HomeAssistant | None = None) -> str:
         return manifest.get("version", "0.1.0")
     except Exception:  # noqa: BLE001
         return "0.1.0"
+
+
+async def _get_version(hass: HomeAssistant) -> str:
+    """Get version without blocking event loop."""
+    # Use cached version if available
+    cached = hass.data.get(DOMAIN, {}).get("version")
+    if cached:
+        return cached
+    # Also check capital alias cache
+    cached = hass.data.get("spatialHA", {}).get("version")
+    if cached:
+        return cached
+    version_str = await hass.async_add_executor_job(_get_version_sync)
+    # Cache for future calls
+    hass.data.setdefault(DOMAIN, {})["version"] = version_str
+    hass.data.setdefault("spatialHA", {})["version"] = version_str
+    return version_str
+
+
+def _resolve_js_path_sync() -> pathlib.Path:
+    """Blocking path resolution - run in executor."""
+    base = pathlib.Path(__file__).parent / "frontend"
+    p1 = base / "spatialha-panel.js"
+    if p1.exists():
+        return p1
+    p2 = base / "spatialHA-panel.js"
+    if p2.exists():
+        return p2
+    candidates = list(base.glob("*.js"))
+    if candidates:
+        return candidates[0]
+    return p1
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -54,31 +92,48 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception as err:  # noqa: BLE001
         LOGGER.error("Failed to register WebSocket: %s", err)
 
-    js_path = pathlib.Path(__file__).parent / "frontend" / "spatialha-panel.js"
-    # Fallback to old capital filename for backward compat (case-sensitive FS)
-    if not js_path.exists():
-        js_path = pathlib.Path(__file__).parent / "frontend" / "spatialHA-panel.js"
-    # Final fallback: try any panel file
-    if not js_path.exists():
-        # Search for any js file in frontend
-        candidates = list((pathlib.Path(__file__).parent / "frontend").glob("*.js"))
-        if candidates:
-            js_path = candidates[0]
+    # Resolve JS path without blocking event loop
+    js_path: pathlib.Path = await hass.async_add_executor_job(_resolve_js_path_sync)
 
+    version_str = await _get_version(hass)
     static_url = PANEL_URL
     legacy_static = "/api/panels/spatialHA/spatialHA-panel.js"
-    version_str = _get_version(hass)
     js_url = f"{static_url}?v={version_str}"
 
-    hass.http.register_static_path(static_url, str(js_path), cache_headers=False)
-    # Register legacy capital URL as well to same file for backward compat (supports both casings)
-    if legacy_static != static_url:
+    # Use new async API to avoid blocking I/O
+    try:
+        from homeassistant.components.http import StaticPathConfig
+
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(static_url, str(js_path), False),
+            ]
+        )
+        # Register legacy capital URL as well
+        if legacy_static != static_url:
+            try:
+                await hass.http.async_register_static_paths(
+                    [StaticPathConfig(legacy_static, str(js_path), False)]
+                )
+            except Exception:  # noqa: BLE001
+                pass
+    except AttributeError:
+        # Fallback for older HA where async_register_static_paths not available
         try:
-            hass.http.register_static_path(legacy_static, str(js_path), cache_headers=False)
+            hass.http.register_static_path(static_url, str(js_path), cache_headers=False)  # type: ignore[attr-defined]
+            if legacy_static != static_url:
+                hass.http.register_static_path(legacy_static, str(js_path), cache_headers=False)  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             pass
 
-    await hass.components.frontend.async_register_built_in_panel(
+    # Use direct import for frontend to avoid deprecated hass.components.frontend
+    try:
+        from homeassistant.components.frontend import async_register_built_in_panel
+    except ImportError:
+        async_register_built_in_panel = hass.components.frontend.async_register_built_in_panel  # type: ignore[attr-defined]
+
+    await async_register_built_in_panel(
+        hass,
         component_name="custom",
         sidebar_title=PANEL_TITLE,
         sidebar_icon=PANEL_ICON,
@@ -98,7 +153,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Also register capital URL path as alias for backward compat (case-sensitive FS)
     try:
-        await hass.components.frontend.async_register_built_in_panel(
+        await async_register_built_in_panel(
+            hass,
             component_name="custom",
             sidebar_title=PANEL_TITLE,
             sidebar_icon=PANEL_ICON,
@@ -118,7 +174,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {"panel_registered": True}
-    # Also alias for capital domain for compatibility
     hass.data.setdefault("spatialHA", {})
     hass.data["spatialHA"][entry.entry_id] = {"panel_registered": True}
 
@@ -128,12 +183,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry and remove panel."""
     try:
-        hass.components.frontend.async_remove_panel(PANEL_URL_PATH)
+        from homeassistant.components.frontend import async_remove_panel
+    except ImportError:
+        async_remove_panel = hass.components.frontend.async_remove_panel  # type: ignore[attr-defined]
+
+    try:
+        async_remove_panel(hass, PANEL_URL_PATH)
         LOGGER.debug("Removed spatialHA panel")
     except Exception as err:  # noqa: BLE001
         LOGGER.debug("Could not remove panel: %s", err)
     try:
-        hass.components.frontend.async_remove_panel("spatialHA")
+        async_remove_panel(hass, "spatialHA")
     except Exception:  # noqa: BLE001
         pass
 

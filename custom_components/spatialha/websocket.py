@@ -14,27 +14,39 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN, LOGGER
 
 
-def _get_version(hass: HomeAssistant | None = None) -> str:
-    """Get current version of spatialHA for cache breaking and About tab."""
+def _get_version_sync() -> str:
+    """Blocking version lookup - run in executor."""
     try:
         return version(DOMAIN)
     except PackageNotFoundError:
         pass
     except Exception:  # noqa: BLE001
         pass
-
-    # Try capital domain as fallback for package metadata
     try:
         return version("spatialHA")
     except Exception:  # noqa: BLE001
         pass
-
     try:
         manifest_path = pathlib.Path(__file__).parent / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         return manifest.get("version", "0.1.0")
     except Exception:  # noqa: BLE001
         return "0.1.0"
+
+
+async def _get_version(hass: HomeAssistant) -> str:
+    """Non-blocking version lookup."""
+    # Check cache first
+    cached = hass.data.get(DOMAIN, {}).get("version")
+    if cached:
+        return cached
+    cached = hass.data.get("spatialHA", {}).get("version")
+    if cached:
+        return cached
+    ver = await hass.async_add_executor_job(_get_version_sync)
+    hass.data.setdefault(DOMAIN, {})["version"] = ver
+    hass.data.setdefault("spatialHA", {})["version"] = ver
+    return ver
 
 
 @websocket_api.websocket_command({vol.Required("type"): "spatialha/get_version"})
@@ -51,7 +63,7 @@ async def handle_get_version(
     """
     LOGGER.debug("WebSocket get_version called: %s", msg)
     try:
-        ver = _get_version(hass)
+        ver = await _get_version(hass)
         connection.send_result(msg["id"], {"version": ver})
     except Exception as err:  # noqa: BLE001
         LOGGER.error("Failed to get version: %s", err)
@@ -79,7 +91,7 @@ async def handle_get_info(
     """Handle spatialha/get_info - generic info passthrough."""
     LOGGER.debug("WebSocket get_info called: %s", msg)
     try:
-        ver = _get_version(hass)
+        ver = await _get_version(hass)
         ha_version = hass.config.version if hasattr(hass.config, "version") else "unknown"
         connection.send_result(
             msg["id"],
@@ -107,7 +119,6 @@ async def handle_get_info_capital(
 
 def async_register_websocket(hass: HomeAssistant) -> None:
     """Register spatialHA WebSocket commands."""
-    # Check both casings to avoid double registration
     if hass.data.get(DOMAIN, {}).get("websocket_registered") or hass.data.get("spatialHA", {}).get(
         "websocket_registered"
     ):
