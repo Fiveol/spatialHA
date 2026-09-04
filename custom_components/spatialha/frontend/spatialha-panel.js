@@ -1,9 +1,9 @@
 /**
  * spatialHA Panel - WebSocket architecture with BLE
  * Frontend NEVER queries directly. All data goes via backend WebSocket
- * through Home Assistant: hass.callWS({type: "spatialha/..."} ) -> backend -> HA
+ * through Home Assistant: hass.callWS({type: "spatialHA/..."} ) -> backend -> HA
  */
-class SpatialHAPanel extends HTMLElement {
+class spatialHAPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
@@ -61,7 +61,7 @@ class SpatialHAPanel extends HTMLElement {
     try {
       let result;
       try {
-        result = await this._hass.callWS({ type: "spatialha/get_version" });
+        result = await this._hass.callWS({ type: "spatialHA/get_version" });
       } catch (e) {
         result = await this._hass.callWS({ type: "spatialHA/get_version" });
       }
@@ -85,10 +85,10 @@ class SpatialHAPanel extends HTMLElement {
     try {
       let data;
       try {
-        data = await this._hass.callWS({ type: "spatialha/ble/get_data" });
+        data = await this._hass.callWS({ type: "spatialHA/ble/get_data" });
       } catch (e) {
         try {
-          data = await this._hass.callWS({ type: "spatialha/get_ble_data" });
+          data = await this._hass.callWS({ type: "spatialHA/get_ble_data" });
         } catch (e2) {
           data = await this._hass.callWS({ type: "spatialHA/ble/get_data" });
         }
@@ -276,7 +276,7 @@ class SpatialHAPanel extends HTMLElement {
     } else if (this._versionError) {
       aboutInner = `<p class="error">Error loading version: ${this._versionError}</p><p><button id="retry-btn">Retry</button></p>`;
     } else if (this._version !== null) {
-      aboutInner = `<p class="version">Current version: ${this._version}</p><p>Version fetched via <code>spatialha/get_version</code> WebSocket (frontend → backend → Home Assistant).</p>`;
+      aboutInner = `<p class="version">Current version: ${this._version}</p><p>Version fetched via <code>spatialHA/get_version</code> WebSocket (frontend → backend → Home Assistant).</p>`;
     } else {
       aboutInner = `<p class="loading">No version loaded yet. Waiting for Home Assistant connection...</p>`;
     }
@@ -342,9 +342,9 @@ class SpatialHAPanel extends HTMLElement {
   }
 }
 
-if (!customElements.get("spatialha-panel")) {
-  customElements.define("spatialha-panel", SpatialHAPanel);
+if (!customElements.get("spatialHA-panel")) {
+  customElements.define("spatialHA-panel", spatialHAPanel);
 }
 if (!customElements.get("spatialHA-panel")) {
-  customElements.define("spatialHA-panel", SpatialHAPanel);
+  customElements.define("spatialHA-panel", spatialHAPanel);
 }

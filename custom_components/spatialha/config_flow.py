@@ -12,7 +12,7 @@ from homeassistant.data_entry_flow import FlowResult
 from .const import DOMAIN
 
 
-class SpatialHAConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class spatialHAConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for spatialHA."""
 
     VERSION = 1

@@ -1,5 +1,5 @@
 {
-  "domain": "spatialha",
+  "domain": "spatialHA",
   "name": "spatialHA",
   "codeowners": ["@Fiveol"],
   "config_flow": true,
@@ -7,5 +7,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Fiveol/spatialHA/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.2.0"
 }

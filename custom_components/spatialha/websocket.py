@@ -49,14 +49,14 @@ async def _get_version(hass: HomeAssistant) -> str:
     return ver
 
 
-@websocket_api.websocket_command({vol.Required("type"): "spatialha/get_version"})
+@websocket_api.websocket_command({vol.Required("type"): "spatialHA/get_version"})
 @websocket_api.async_response
 async def handle_get_version(
     hass: HomeAssistant,
     connection: websocket_api.ActiveConnection,
     msg: dict,
 ) -> None:
-    """Handle spatialha/get_version - return current integration version.
+    """Handle spatialHA/get_version - return current integration version.
 
     Frontend must NEVER query version directly (no fetch), everything passes through here.
     Backend in turn reads from Home Assistant (manifest / package metadata).
@@ -81,14 +81,14 @@ async def handle_get_version_capital(
     await handle_get_version(hass, connection, msg)
 
 
-@websocket_api.websocket_command({vol.Required("type"): "spatialha/get_info"})
+@websocket_api.websocket_command({vol.Required("type"): "spatialHA/get_info"})
 @websocket_api.async_response
 async def handle_get_info(
     hass: HomeAssistant,
     connection: websocket_api.ActiveConnection,
     msg: dict,
 ) -> None:
-    """Handle spatialha/get_info - generic info passthrough."""
+    """Handle spatialHA/get_info - generic info passthrough."""
     LOGGER.debug("WebSocket get_info called: %s", msg)
     try:
         ver = await _get_version(hass)
@@ -333,7 +333,7 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
         return {"scanners": [], "sightings": [], "devices": [], "error": str(err)}
 
 
-@websocket_api.websocket_command({vol.Required("type"): "spatialha/ble/get_data"})
+@websocket_api.websocket_command({vol.Required("type"): "spatialHA/ble/get_data"})
 @websocket_api.async_response
 async def handle_ble_get_data(
     hass: HomeAssistant,
@@ -349,7 +349,7 @@ async def handle_ble_get_data(
         connection.send_error(msg["id"], "ble_get_data_failed", str(err))
 
 
-@websocket_api.websocket_command({vol.Required("type"): "spatialha/get_ble_data"})
+@websocket_api.websocket_command({vol.Required("type"): "spatialHA/get_ble_data"})
 @websocket_api.async_response
 async def handle_get_ble_data_alias(
     hass: HomeAssistant,
@@ -389,5 +389,5 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     hass.data.setdefault(DOMAIN, {})["websocket_registered"] = True
     hass.data.setdefault("spatialHA", {})["websocket_registered"] = True
     LOGGER.info(
-        "Registered spatialHA WebSocket commands: spatialha/get_version, spatialha/ble/get_data"
+        "Registered spatialHA WebSocket commands: spatialHA/get_version, spatialHA/ble/get_data"
     )
