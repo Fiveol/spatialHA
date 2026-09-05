@@ -67,6 +67,7 @@ class SpatialHAPanel extends HTMLElement {
       if (this._activeTab === "targets") this._ensureTargetsSubscription();
       if (this._activeTab === "gps") this._ensureGpsSubscription();
       if (this._activeTab === "floorplan") this._ensureFloorplanSubscription();
+      if (this._activeTab === "home" && !this._floorplan && !this._floorplanLoading) this._fetchFloorplanOnce();
     } else {
       if (this._activeTab === "about" && !this._hasFetchedVersion && !this._loadingVersion) this._fetchVersion();
       if (this._activeTab === "ble" && !this._bleUnsub) this._ensureBleSubscription();
@@ -74,6 +75,8 @@ class SpatialHAPanel extends HTMLElement {
       if (this._activeTab === "targets" && !this._targetsUnsub) this._ensureTargetsSubscription();
       if (this._activeTab === "gps" && !this._gpsUnsub) this._ensureGpsSubscription();
       if (this._activeTab === "floorplan" && !this._floorplanUnsub) this._ensureFloorplanSubscription();
+      if (this._activeTab === "home" && !this._floorplan && !this._floorplanLoading && !this._floorplanUnsub) this._ensureFloorplanSubscription();
+      if (this._activeTab === "home" && this._floorplan) this._renderHomeIsoCanvas();
     }
   }
 
@@ -98,6 +101,10 @@ class SpatialHAPanel extends HTMLElement {
     if (tab === "targets" && this._hass) this._ensureTargetsSubscription();
     if (tab === "gps" && this._hass) this._ensureGpsSubscription();
     if (tab === "floorplan" && this._hass) this._ensureFloorplanSubscription();
+    if (tab === "home" && this._hass) {
+      if (!this._floorplan && !this._floorplanLoading) this._fetchFloorplanOnce();
+      else setTimeout(() => this._renderHomeIsoCanvas(), 0);
+    }
   }
 
   _switchBleSubTab(sub) {
@@ -287,6 +294,10 @@ class SpatialHAPanel extends HTMLElement {
     if (this._floorplanUnits === "feet_inches") return v * 0.3048;
     return v;
   }
+  _clampToFloor(floor, x, y) {
+    const w = parseFloat(floor.width) || 10, d = parseFloat(floor.depth) || 8;
+    return { x: Math.min(Math.max(x, 0), w > 0 ? w : 10), y: Math.min(Math.max(y, 0), d > 0 ? d : 8) };
+  }
   _ensureFloorplanSubscription() {
     if (!this._hass || !this._hass.connection || this._floorplanUnsub) return;
     this._floorplanLoading = true;
@@ -304,6 +315,7 @@ class SpatialHAPanel extends HTMLElement {
           // Only full re-render if on floorplan tab and not mid-drag; else just redraw canvas
           if (this._activeTab === "floorplan" && !this._dragging && !this._floorplanPanning) this._render();
           this._renderFloorplanCanvas();
+          if (this._activeTab === "home") this._renderHomeIsoCanvas();
         }
       }, { type: "spatialHA/floorplan/subscribe" });
       if (sub && typeof sub.then === "function") {
@@ -320,7 +332,7 @@ class SpatialHAPanel extends HTMLElement {
       this._floorplanUnits = fp.units || "meters";
       if (!this._selectedFloorId && fp.floors && fp.floors.length) this._selectedFloorId = fp.active_floor_id || fp.floors[0].id;
     } catch (err) { this._floorplanError = err.message || String(err); }
-    finally { this._floorplanLoading = false; this._render(); this._renderFloorplanCanvas(); }
+    finally { this._floorplanLoading = false; this._render(); this._renderFloorplanCanvas(); this._renderHomeIsoCanvas(); }
   }
   async _saveFloorplan() {
     if (!this._hass || !this._floorplan) return;
@@ -370,10 +382,21 @@ class SpatialHAPanel extends HTMLElement {
     const floor = this._getActiveFloor();
     if (!floor) return;
     const w = cssW, h = cssH;
-    ctx.clearRect(0, 0, w, h);
+    // Dark mode editor background (not the terrible light one)
+    ctx.fillStyle = "#14161a";
+    ctx.fillRect(0, 0, w, h);
     ctx.lineJoin = "round"; ctx.lineCap = "round";
     ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
-    ctx.strokeStyle = "#eee"; ctx.lineWidth = 1;
+    // Draw floor bounds (dimensions constraint)
+    const fb = { x: 0, y: 0, w: 10, d: 8 };
+    try { fb.w = parseFloat(floor.width) || 10; fb.d = parseFloat(floor.depth) || 8; } catch (e) {}
+    const c00 = this._worldToScreen(0, 0, floor), cW0 = this._worldToScreen(fb.w, 0, floor), cWd = this._worldToScreen(fb.w, fb.d, floor), c0d = this._worldToScreen(0, fb.d, floor);
+    ctx.fillStyle = "rgba(255,255,255,0.03)";
+    ctx.beginPath(); ctx.moveTo(c00.x, c00.y); ctx.lineTo(cW0.x, cW0.y); ctx.lineTo(cWd.x, cWd.y); ctx.lineTo(c0d.x, c0d.y); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#4a5568"; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.moveTo(c00.x, c00.y); ctx.lineTo(cW0.x, cW0.y); ctx.lineTo(cWd.x, cWd.y); ctx.lineTo(c0d.x, c0d.y); ctx.closePath(); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = "#2a2e35"; ctx.lineWidth = 1;
     const gridStep = this._floorplanScale * (this._floorplanUnits === "meters" ? 1 : 0.6096);
     for (let x = this._floorplanOffset.x % gridStep; x < w; x += gridStep) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
     for (let y = this._floorplanOffset.y % gridStep; y < h; y += gridStep) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
@@ -381,32 +404,36 @@ class SpatialHAPanel extends HTMLElement {
       if (!room.point_ids || room.point_ids.length < 3) continue;
       const pts = room.point_ids.map((id) => floor.points.find((p) => p.id === id)).filter(Boolean);
       if (pts.length < 3) continue;
-      ctx.fillStyle = room.color || "rgba(100,150,255,0.2)";
-      ctx.strokeStyle = room.color || "#6496ff"; ctx.lineWidth = 2;
+      ctx.fillStyle = room.color ? room.color + "55" : "rgba(100,150,255,0.25)";
+      ctx.strokeStyle = room.color || "#7aa2ff"; ctx.lineWidth = 2;
       ctx.beginPath();
       pts.forEach((p, i) => { const s = this._worldToScreen(p.x, p.y, floor); if (i === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y); });
       ctx.closePath(); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = "#333"; ctx.font = "12px sans-serif";
+      // Readable label: dark halo behind light text
+      ctx.font = "12px sans-serif";
       const c = pts.reduce((a, p) => ({ x: a.x + p.x, y: a.y + p.y }), { x: 0, y: 0 }); c.x /= pts.length; c.y /= pts.length;
-      const sc = this._worldToScreen(c.x, c.y, floor); ctx.fillText(room.name || room.id, sc.x - 20, sc.y);
+      const sc = this._worldToScreen(c.x, c.y, floor);
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.85)";
+      ctx.strokeText(room.name || "", sc.x - 20, sc.y);
+      ctx.fillStyle = "#f1f3f5"; ctx.fillText(room.name || "", sc.x - 20, sc.y);
     }
     for (const wall of (floor.walls || [])) {
       const p1 = floor.points.find((p) => p.id === wall.p1), p2 = floor.points.find((p) => p.id === wall.p2);
       if (!p1 || !p2) continue;
       const s1 = this._worldToScreen(p1.x, p1.y, floor), s2 = this._worldToScreen(p2.x, p2.y, floor);
-      if (this._selectedWallId === wall.id) { ctx.strokeStyle = "#ff6600"; ctx.lineWidth = 4; } else { ctx.strokeStyle = "#333"; ctx.lineWidth = 3; }
+      if (this._selectedWallId === wall.id) { ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 4; } else { ctx.strokeStyle = "#e8eaf0"; ctx.lineWidth = 3; }
       ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke();
     }
     for (const pt of (floor.points || [])) {
       const s = this._worldToScreen(pt.x, pt.y, floor);
       const isSelected = this._selectedPointId === pt.id;
-      ctx.fillStyle = isSelected ? "#ff6600" : "#03a9f4";
+      // No white tint: dark outline so text/neighbors stay readable
+      ctx.fillStyle = isSelected ? "#ff9800" : "#03a9f4";
       ctx.beginPath(); ctx.arc(s.x, s.y, 6, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = "white"; ctx.lineWidth = 2; ctx.stroke();
-      // No names/IDs shown (per request) - dots only, selected gets ring
+      ctx.strokeStyle = "#0b0e13"; ctx.lineWidth = 2; ctx.stroke();
       if (isSelected) {
-        ctx.strokeStyle = "#ff6600"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(s.x, s.y, 10, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(s.x, s.y, 11, 0, Math.PI * 2); ctx.stroke();
       }
     }
     if (this._contextMenu && this._contextMenu.pointId) {
@@ -447,8 +474,10 @@ class SpatialHAPanel extends HTMLElement {
             const dist = parseFloat(valStr);
             if (isNaN(dist) || dist <= 0) { alert("Invalid distance"); return; }
             const distM = this._displayToMeters(dist);
-            const newX = pt.x + d.dx * distM;
-            const newY = pt.y + d.dy * distM;
+            let newX = pt.x + d.dx * distM;
+            let newY = pt.y + d.dy * distM;
+            const cl = this._clampToFloor(floor, newX, newY);
+            newX = cl.x; newY = cl.y;
             this._fpPushUndo();
             const newId = "point_" + Date.now();
             floor.points.push({ id: newId, x: newX, y: newY, label: "" });
@@ -547,8 +576,9 @@ class SpatialHAPanel extends HTMLElement {
         const xv = parseFloat(xs), yv = parseFloat(ys);
         if (isNaN(xv) || isNaN(yv)) { alert("Invalid position"); return; }
         this._fpPushUndo();
-        pt.x = this._displayToMeters(xv);
-        pt.y = this._displayToMeters(yv);
+        const cl = this._clampToFloor(floor, this._displayToMeters(xv), this._displayToMeters(yv));
+        pt.x = cl.x;
+        pt.y = cl.y;
         this._saveFloorplan();
         this._renderFloorplanCanvas();
         return;
@@ -610,7 +640,8 @@ class SpatialHAPanel extends HTMLElement {
       if (this._fpClipboard.kind === "point") {
         const src = this._fpClipboard.data;
         const nid = "point_" + Date.now();
-        floor.points.push({ id: nid, x: (src.x || 0) + 0.5, y: (src.y || 0) + 0.5, label: "" });
+        const cl = this._clampToFloor(floor, (src.x || 0) + 0.5, (src.y || 0) + 0.5);
+        floor.points.push({ id: nid, x: cl.x, y: cl.y, label: "" });
         this._selectedPointId = nid;
       } else if (this._fpClipboard.kind === "wall") {
         const src = this._fpClipboard.data;
@@ -618,8 +649,10 @@ class SpatialHAPanel extends HTMLElement {
         const p1 = floor.points.find((p) => p.id === src.p1), p2 = floor.points.find((p) => p.id === src.p2);
         if (p1 && p2) {
           const n1 = "point_" + Date.now(), n2 = "point_" + (Date.now() + 1);
-          floor.points.push({ id: n1, x: p1.x + 0.5, y: p1.y + 0.5, label: "" });
-          floor.points.push({ id: n2, x: p2.x + 0.5, y: p2.y + 0.5, label: "" });
+          const c1 = this._clampToFloor(floor, p1.x + 0.5, p1.y + 0.5);
+          const c2 = this._clampToFloor(floor, p2.x + 0.5, p2.y + 0.5);
+          floor.points.push({ id: n1, x: c1.x, y: c1.y, label: "" });
+          floor.points.push({ id: n2, x: c2.x, y: c2.y, label: "" });
           floor.walls.push({ id: "wall_" + Date.now(), p1: n1, p2: n2 });
         }
       }
@@ -654,6 +687,83 @@ class SpatialHAPanel extends HTMLElement {
     this._floorplanScale = Math.max(5, Math.min(200, this._floorplanScale));
     this._renderFloorplanCanvas();
   }
+  _isoProject(x, y, z, cx, cy, s, zStep) {
+    const cos30 = 0.8660254, sin30 = 0.5;
+    return { x: cx + (x - y) * cos30 * s, y: cy + (x + y) * sin30 * s - z * zStep };
+  }
+  _renderHomeIsoCanvas() {
+    const canvas = this.shadowRoot ? this.shadowRoot.getElementById("home-iso-canvas") : null;
+    if (!canvas) return;
+    if (!this._floorplan || !this._floorplan.floors || !this._floorplan.floors.length) {
+      // Still ensure subscription so home populates
+      if (this._hass && !this._floorplan && !this._floorplanLoading) this._fetchFloorplanOnce();
+      return;
+    }
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const rect = canvas.getBoundingClientRect();
+    const cssW = Math.max(300, Math.round(rect.width || 800));
+    const cssH = 420;
+    if (canvas.width !== Math.floor(cssW * dpr) || canvas.height !== Math.floor(cssH * dpr)) {
+      canvas.width = Math.floor(cssW * dpr);
+      canvas.height = Math.floor(cssH * dpr);
+      canvas.style.height = cssH + "px";
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = "#14161a";
+    ctx.fillRect(0, 0, cssW, cssH);
+    const floors = [...this._floorplan.floors].sort((a, b) => (a.level || 0) - (b.level || 0));
+    // Fit scale to largest floor
+    let maxDim = 10;
+    for (const f of floors) maxDim = Math.max(maxDim, parseFloat(f.width) || 10, parseFloat(f.depth) || 8);
+    const s = Math.min(cssW, cssH * 1.6) / (maxDim * 2.2);
+    const cx = cssW / 2, cy = cssH / 2 + (floors.length * 18) / 2;
+    const zStep = 52;
+    // Draw bottom-up so upper floors overlay correctly? Actually draw top last for visibility
+    floors.forEach((floor, fi) => {
+      const z = (floor.level || fi);
+      const proj = (x, y) => this._isoProject(x, y, z, cx, cy, s, zStep);
+      // Floor base
+      const w = parseFloat(floor.width) || 10, d = parseFloat(floor.depth) || 8;
+      const c00 = proj(0, 0), cW0 = proj(w, 0), cWd = proj(w, d), c0d = proj(0, d);
+      ctx.fillStyle = "rgba(255,255,255,0.04)";
+      ctx.strokeStyle = "#4a5568"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(c00.x, c00.y); ctx.lineTo(cW0.x, cW0.y); ctx.lineTo(cWd.x, cWd.y); ctx.lineTo(c0d.x, c0d.y); ctx.closePath(); ctx.fill(); ctx.stroke();
+      // Rooms
+      for (const room of (floor.rooms || [])) {
+        if (!room.point_ids || room.point_ids.length < 3) continue;
+        const pts = room.point_ids.map((id) => floor.points.find((p) => p.id === id)).filter(Boolean);
+        if (pts.length < 3) continue;
+        ctx.fillStyle = room.color ? room.color + "66" : "rgba(100,150,255,0.3)";
+        ctx.strokeStyle = room.color || "#7aa2ff"; ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        pts.forEach((p, i) => { const q = proj(p.x, p.y); if (i === 0) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y); });
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+      // Walls
+      for (const wall of (floor.walls || [])) {
+        const p1 = floor.points.find((p) => p.id === wall.p1), p2 = floor.points.find((p) => p.id === wall.p2);
+        if (!p1 || !p2) continue;
+        const q1 = proj(p1.x, p1.y), q2 = proj(p2.x, p2.y);
+        ctx.strokeStyle = "#e8eaf0"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(q1.x, q1.y); ctx.lineTo(q2.x, q2.y); ctx.stroke();
+      }
+      // Points (no labels)
+      for (const pt of (floor.points || [])) {
+        const q = proj(pt.x, pt.y);
+        ctx.fillStyle = "#03a9f4";
+        ctx.beginPath(); ctx.arc(q.x, q.y, 3.5, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "#0b0e13"; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+      // Floor label with halo
+      ctx.font = "12px sans-serif";
+      const lp = proj(0, 0);
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.85)";
+      const label = (floor.name || "") + " (L" + (floor.level || 0) + ")";
+      ctx.strokeText(label, lp.x - 30, lp.y - 10);
+      ctx.fillStyle = "#f1f3f5"; ctx.fillText(label, lp.x - 30, lp.y - 10);
+    });
+  }
   _renderFloorplan() {
     if (this._floorplanLoading) return `<p class="loading">Loading floorplan…</p>`;
     if (this._floorplanError) return `<p class="error">Error: ${this._esc(this._floorplanError)}</p><p><button id="floorplan-retry">Retry</button></p>`;
@@ -680,8 +790,8 @@ class SpatialHAPanel extends HTMLElement {
           <label>Level: <input id="floor-level" type="number" value="${floor.level}" style="width:60px"></label>
         </div>
         <div style="display:flex; gap:4px; margin:8px 0; flex-wrap:wrap;">${floorTabs}</div>
-        <div id="floorplan-wrap" style="border:1px solid #ccc; border-radius:8px; overflow:hidden; background:#fafafa; aspect-ratio: 8/5; max-height:520px;">
-          <canvas id="floorplan-canvas" width="800" height="500" style="display:block; cursor:crosshair; width:100%; height:100%;"></canvas>
+        <div id="floorplan-wrap" style="border:1px solid #333; border-radius:8px; overflow:hidden; background:#14161a; aspect-ratio: 8/5; max-height:520px;">
+          <canvas id="floorplan-canvas" width="800" height="500" style="display:block; cursor:crosshair; width:100%; height:100%; background:#14161a;"></canvas>
         </div>
         <p><small>${selectedInfo} | Scale: ${this._floorplanScale.toFixed(1)}px/m</small></p>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px;">
@@ -689,7 +799,7 @@ class SpatialHAPanel extends HTMLElement {
           <div><h3>Rooms</h3><p><button id="room-add">Add Room (all points)</button></p><table><thead><tr><th>Name</th><th>Points</th><th>Color</th><th>Action</th></tr></thead><tbody>${roomsHtml}</tbody></table></div>
         </div>
         <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:16px;">
-          <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Floor Alignment</h4><label>Offset X (m): <input id="align-x" type="number" step="0.1" value="${floor.offset_x || 0}" style="width:80px"></label><br><label>Offset Y (m): <input id="align-y" type="number" step="0.1" value="${floor.offset_y || 0}" style="width:80px"></label><br><label>Scale: <input id="align-scale" type="number" step="0.1" value="${floor.scale || 1}" style="width:80px"></label><br><label>Rotation (deg): <input id="align-rot" type="number" step="1" value="${(((floor.rotation || 0) * 180 / Math.PI)).toFixed(1)}" style="width:80px"></label><br><button id="align-save">Save Alignment</button></div>
+          <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Floor Dimensions (meters, constrains points)</h4><label>Width (m): <input id="floor-width" type="number" step="0.1" min="1" value="${floor.width || 10}" style="width:80px"></label><br><label>Depth (m): <input id="floor-depth" type="number" step="0.1" min="1" value="${floor.depth || 8}" style="width:80px"></label><br><label>Height (m): <input id="floor-height" type="number" step="0.1" min="1" value="${floor.height || 3}" style="width:80px"></label><br><button id="dims-save">Save Dimensions</button><h4 style="margin-top:12px;">Floor Alignment</h4><label>Offset X (m): <input id="align-x" type="number" step="0.1" value="${floor.offset_x || 0}" style="width:80px"></label><br><label>Offset Y (m): <input id="align-y" type="number" step="0.1" value="${floor.offset_y || 0}" style="width:80px"></label><br><label>Scale: <input id="align-scale" type="number" step="0.1" value="${floor.scale || 1}" style="width:80px"></label><br><label>Rotation (deg): <input id="align-rot" type="number" step="1" value="${(((floor.rotation || 0) * 180 / Math.PI)).toFixed(1)}" style="width:80px"></label><br><button id="align-save">Save Alignment</button></div>
           <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Points (${floor.points.length})</h4><div style="max-height:150px; overflow:auto;">${floor.points.map((p) => `<div style="padding:4px; background:${p.id === this._selectedPointId ? "#e3f2fd" : "transparent"}; border-radius:4px;">(${p.x.toFixed(2)},${p.y.toFixed(2)}) <button data-del-point="${this._esc(p.id)}" style="float:right;">Delete</button></div>`).join("")}</div><p><button id="point-add">Add Point at 0,0</button></p></div>
         </div>
       </div>
@@ -1131,8 +1241,15 @@ class SpatialHAPanel extends HTMLElement {
     const homeContent = `
       <div class="card">
         <h1>This is the spatialHA panel</h1>
-        <p>Welcome to spatialHA â€“ Home tab</p>
-        <p>Use the tabs above to navigate. All data is loaded via WebSocket through the backend.</p>
+        <p>Welcome to spatialHA – Home tab</p>
+        <p>Isometric stacked view of each floor plan. Use the tabs above to navigate. All data is loaded via WebSocket through the backend.</p>
+      </div>
+      <div class="card" style="margin-top:12px;">
+        <h2>Floors – Isometric</h2>
+        <div style="border:1px solid #333; border-radius:8px; overflow:hidden; background:#14161a;">
+          <canvas id="home-iso-canvas" width="800" height="420" style="display:block; width:100%; height:420px; background:#14161a;"></canvas>
+        </div>
+        <p><small>Each floor stacked by level. Walls, rooms and points drawn in isometric projection.</small></p>
       </div>
     `;
 
@@ -1359,6 +1476,9 @@ class SpatialHAPanel extends HTMLElement {
     const unitsSel = this.shadowRoot.getElementById("floorplan-units");
     if (unitsSel) unitsSel.addEventListener("change", (e) => { this._floorplanUnits = e.target.value; this._saveFloorplan(); this._render(); this._renderFloorplanCanvas(); });
     this.shadowRoot.querySelectorAll("[data-floor]").forEach((b) => b.addEventListener("click", () => { this._selectedFloorId = b.getAttribute("data-floor"); this._selectedPointId = null; this._selectedWallId = null; this._contextMenu = null; this._saveFloorplan(); this._render(); this._renderFloorplanCanvas(); }));
+    if (this.shadowRoot.getElementById("home-iso-canvas")) {
+      setTimeout(() => this._renderHomeIsoCanvas(), 0);
+    }
     const floorAdd = this.shadowRoot.getElementById("floor-add");
     if (floorAdd) floorAdd.addEventListener("click", () => {
       const name = prompt("Floor name?", "Floor " + (this._floorplan.floors.length + 1));
@@ -1367,7 +1487,7 @@ class SpatialHAPanel extends HTMLElement {
       const lvl = parseInt(lvlStr || "0", 10) || 0;
       this._fpPushUndo();
       const nid = "floor_" + Date.now();
-      this._floorplan.floors.push({ id: nid, name: name, level: lvl, offset_x: 0, offset_y: 0, scale: 1, rotation: 0, points: [{ id: "point_" + Date.now(), x: 0, y: 0, label: "" }], walls: [], rooms: [] });
+      this._floorplan.floors.push({ id: nid, name: name, level: lvl, offset_x: 0, offset_y: 0, scale: 1, rotation: 0, width: 10, depth: 8, height: 3, points: [{ id: "point_" + Date.now(), x: 0, y: 0, label: "" }], walls: [], rooms: [] });
       this._selectedFloorId = nid; this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
     });
     const floorRename = this.shadowRoot.getElementById("floor-rename");
@@ -1431,6 +1551,21 @@ class SpatialHAPanel extends HTMLElement {
       if (ay) f.offset_y = parseFloat(ay.value) || 0;
       if (sc) f.scale = parseFloat(sc.value) || 1;
       if (rt) f.rotation = (parseFloat(rt.value) || 0) * Math.PI / 180;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    const dimsSave = this.shadowRoot.getElementById("dims-save");
+    if (dimsSave) dimsSave.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      this._fpPushUndo();
+      const fw = this.shadowRoot.getElementById("floor-width"), fd = this.shadowRoot.getElementById("floor-depth"), fh = this.shadowRoot.getElementById("floor-height");
+      if (fw) f.width = Math.max(1, parseFloat(fw.value) || 10);
+      if (fd) f.depth = Math.max(1, parseFloat(fd.value) || 8);
+      if (fh) f.height = Math.max(1, parseFloat(fh.value) || 3);
+      // Constrain all points into new dimensions
+      for (const pt of (f.points || [])) {
+        const cl = this._clampToFloor(f, pt.x, pt.y);
+        pt.x = cl.x; pt.y = cl.y;
+      }
       this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
     });
     const pointAdd = this.shadowRoot.getElementById("point-add");

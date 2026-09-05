@@ -236,12 +236,31 @@ def _default_floorplan() -> dict:
                 "offset_y": 0.0,
                 "scale": 1.0,
                 "rotation": 0.0,
-                "points": [{"id": "point_1", "x": 0.0, "y": 0.0, "label": "Origin"}],
+                "width": 10.0,
+                "depth": 8.0,
+                "height": 3.0,
+                "points": [{"id": "point_1", "x": 0.0, "y": 0.0, "label": ""}],
                 "walls": [],
                 "rooms": [],
             }
         ],
     }
+
+
+def _clamp_point_to_floor(floor: dict, x: float, y: float) -> tuple[float, float]:
+    """Constrain point to floor dimensions (meters, origin 0,0 corner)."""
+    try:
+        w = float(floor.get("width", 10.0) or 10.0)
+        d = float(floor.get("depth", 8.0) or 8.0)
+    except Exception:
+        w, d = 10.0, 8.0
+    if w <= 0:
+        w = 10.0
+    if d <= 0:
+        d = 8.0
+    cx = min(max(float(x), 0.0), w)
+    cy = min(max(float(y), 0.0), d)
+    return cx, cy
 
 
 async def _async_load_floorplan(hass: HomeAssistant) -> dict:
@@ -263,11 +282,22 @@ async def _async_load_floorplan(hass: HomeAssistant) -> dict:
         floor.setdefault("offset_y", 0.0)
         floor.setdefault("scale", 1.0)
         floor.setdefault("rotation", 0.0)
+        floor.setdefault("width", 10.0)
+        floor.setdefault("depth", 8.0)
+        floor.setdefault("height", 3.0)
         floor.setdefault("points", [])
         floor.setdefault("walls", [])
         floor.setdefault("rooms", [])
         if not floor["points"]:
-            floor["points"] = [{"id": "point_1", "x": 0.0, "y": 0.0, "label": "Origin"}]
+            floor["points"] = [{"id": "point_1", "x": 0.0, "y": 0.0, "label": ""}]
+        # Clamp existing points into dimensions
+        for pt in floor["points"]:
+            try:
+                cx, cy = _clamp_point_to_floor(floor, float(pt.get("x", 0.0)), float(pt.get("y", 0.0)))
+                pt["x"] = cx
+                pt["y"] = cy
+            except Exception:
+                pass
     return data
 
 
