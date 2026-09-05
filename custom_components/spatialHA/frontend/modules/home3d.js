@@ -29,6 +29,23 @@ export const Home3DMixin = {
     this._fpPitchOff = 0;
     this._render();
   },
+  _fpPickFit() {
+    // Fit + floor for picking on the editor 3D preview. Null when unavailable.
+    const floor = this._getActiveFloor();
+    if (!floor || !this.shadowRoot) return null;
+    const canvas = this.shadowRoot.getElementById("floorplan-3d-canvas");
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const cssW = Math.max(300, Math.round(rect.width || 800));
+    const cssH = 380;
+    const views = this._homeViews();
+    const base = views.find((v) => v.id === (this._fpView || "iso")) || views[0];
+    const view = {
+      yaw: (base.yaw + (this._fpYawOff || 0)) * Math.PI / 180,
+      pitch: Math.max(-80, Math.min(89.9, base.pitch + (this._fpPitchOff || 0))) * Math.PI / 180,
+    };
+    return { fit: this._compute3DFit(cssW, cssH, [floor], view, this._fpZoom || 1), floor, slabZ: 0.25 };
+  },
   _renderFloorPreview3D() {
     const canvas = this.shadowRoot ? this.shadowRoot.getElementById("floorplan-3d-canvas") : null;
     if (!canvas) return;
@@ -55,6 +72,89 @@ export const Home3DMixin = {
       pitch: Math.max(-80, Math.min(89.9, base.pitch + (this._fpPitchOff || 0))) * Math.PI / 180,
     };
     this._draw3DScene(canvas, cssW, cssH, [floor], view, this._fpZoom || 1);
+    // Editing overlays (selection, arrows, drag previews) in screen space
+    const fit = this._compute3DFit(cssW, cssH, [floor], view, this._fpZoom || 1);
+    const proj = (x, y, z) => this._project3DFit(fit, x, y, z);
+    const zSlab = 0.25;
+    const ring = (x, y, z, color, r) => {
+      const q = proj(x, y, z);
+      ctx.strokeStyle = color; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(q.x, q.y, r || 10, 0, Math.PI * 2); ctx.stroke();
+    };
+    for (const pt of (floor.points || [])) {
+      if (pt.id === this._selectedPointId) ring(pt.x, pt.y, zSlab + 0.45, "#ff9800", 11);
+    }
+    if (this._selectedWallId) {
+      const wall = (floor.walls || []).find((w) => w.id === this._selectedWallId);
+      if (wall) {
+        const p1 = floor.points.find((p) => p.id === wall.p1), p2 = floor.points.find((p) => p.id === wall.p2);
+        if (p1 && p2) {
+          const q1 = proj(p1.x, p1.y, zSlab), q2 = proj(p2.x, p2.y, zSlab);
+          ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 4;
+          ctx.beginPath(); ctx.moveTo(q1.x, q1.y); ctx.lineTo(q2.x, q2.y); ctx.stroke();
+        }
+      }
+    }
+    const selDoor = this._selectedDoorId ? (floor.doors || []).find((d) => d.id === this._selectedDoorId) : null;
+    if (selDoor) {
+      const rad = (parseFloat(selDoor.rotation) || 0) * Math.PI / 180;
+      const w = parseFloat(selDoor.width) || 0.9;
+      const q = proj(parseFloat(selDoor.x) || 0, parseFloat(selDoor.y) || 0, zSlab + 0.75);
+      void rad; void w;
+      ring(parseFloat(selDoor.x) || 0, parseFloat(selDoor.y) || 0, zSlab + 0.75, "#ff9800", 12);
+      void q;
+    }
+    const selWin = this._selectedWindowId ? (floor.windows || []).find((w) => w.id === this._selectedWindowId) : null;
+    if (selWin) ring(parseFloat(selWin.x) || 0, parseFloat(selWin.y) || 0, zSlab + 0.65, "#ff9800", 12);
+    if (this._contextMenu && this._contextMenu.pointId) {
+      const pt = floor.points.find((p) => p.id === this._contextMenu.pointId);
+      if (pt) {
+        const s = proj(pt.x, pt.y, zSlab);
+        const dirs = [{ dx: 0, dy: -1, arrow: "↑" }, { dx: 1, dy: 0, arrow: "→" }, { dx: 0, dy: 1, arrow: "↓" }, { dx: -1, dy: 0, arrow: "←" }];
+        dirs.forEach((d) => {
+          const ax = s.x + d.dx * 40, ay = s.y + d.dy * 40;
+          ctx.fillStyle = "rgba(255,255,255,0.9)"; ctx.strokeStyle = "#03a9f4"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(ax, ay, 14, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = "#03a9f4"; ctx.font = "bold 16px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(d.arrow, ax, ay);
+          ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+        });
+      }
+    }
+    if (this._wallDrag && this._wallDrag.moved) {
+      const from = floor.points.find((p) => p.id === this._wallDrag.fromId);
+      if (from) {
+        const s1 = proj(from.x, from.y, zSlab);
+        ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 3; ctx.setLineDash([8, 5]);
+        ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(this._wallDrag.curX, this._wallDrag.curY); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+    if (this._roomDrag && this._roomDrag.pointIds.length) {
+      for (const pid of this._roomDrag.pointIds) {
+        const pt = floor.points.find((p) => p.id === pid);
+        if (!pt) continue;
+        const s = proj(pt.x, pt.y, zSlab);
+        ctx.strokeStyle = "#22c55e"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(s.x, s.y, 11, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+  },
+  _fpPreviewFit() {
+    // Fit + floor for picking on the editor 3D preview. Null when unavailable.
+    const floor = this._getActiveFloor();
+    if (!floor) return null;
+    const canvas = this.shadowRoot ? this.shadowRoot.getElementById("floorplan-3d-canvas") : null;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const cssW = Math.max(300, Math.round(rect.width || 800));
+    const cssH = 380;
+    const views = this._homeViews();
+    const base = views.find((v) => v.id === (this._fpView || "iso")) || views[0];
+    const view = {
+      yaw: (base.yaw + (this._fpYawOff || 0)) * Math.PI / 180,
+      pitch: Math.max(-80, Math.min(89.9, base.pitch + (this._fpPitchOff || 0))) * Math.PI / 180,
+    };
+    return { fit: this._compute3DFit(cssW, cssH, [floor], view, this._fpZoom || 1), floor, slabZ: 0.25 };
   },
   _homeProject(x, y, z, cx, cy, s, cosY, sinY, cosP, sinP) {
     // Orbit camera: yaw around Z, pitch around X, orthographic.
@@ -119,8 +219,7 @@ export const Home3DMixin = {
     });
     return { faces, lines, dots };
   },
-  _draw3DScene(canvas, cssW, cssH, floors, view, zoom) {
-    const ctx = canvas.getContext("2d");
+  _compute3DFit(cssW, cssH, floors, view, zoom) {
     const cosY = Math.cos(view.yaw), sinY = Math.sin(view.yaw);
     const cosP = Math.cos(view.pitch), sinP = Math.sin(view.pitch);
     const GAP = 1.5;
@@ -144,8 +243,27 @@ export const Home3DMixin = {
     const cx = cssW / 2 + (cc.x * cosY - cc.y * sinY) * s;
     const y1c = cc.x * sinY + cc.y * cosY;
     const cy = cssH / 2 + (y1c * sinP + cc.z * cosP) * s;
-    const proj = (x, y, z) => this._homeProject(x, y, z, cx, cy, s, cosY, sinY, cosP, sinP);
-    const scene = this._build3DFaces(floors, bases);
+    return { s, cx, cy, cosY, sinY, cosP, sinP, bases };
+  },
+  _project3DFit(fit, x, y, z) {
+    return this._homeProject(x, y, z, fit.cx, fit.cy, fit.s, fit.cosY, fit.sinY, fit.cosP, fit.sinP);
+  },
+  _unproject3DFit(fit, sx, sy, z) {
+    // Invert mirrored orthographic projection at height z. Null when degenerate.
+    const ax = (fit.cx - sx) / fit.s;
+    const bz = (fit.cy - sy) / fit.s;
+    if (Math.abs(fit.sinP) < 1e-6) return null;
+    const y1 = (bz - z * fit.cosP) / fit.sinP;
+    return {
+      x: ax * fit.cosY + y1 * fit.sinY,
+      y: -ax * fit.sinY + y1 * fit.cosY,
+    };
+  },
+  _draw3DScene(canvas, cssW, cssH, floors, view, zoom) {
+    const ctx = canvas.getContext("2d");
+    const fit = this._compute3DFit(cssW, cssH, floors, view, zoom);
+    const proj = (x, y, z) => this._project3DFit(fit, x, y, z);
+    const scene = this._build3DFaces(floors, fit.bases);
     const depthOf = (pts) => pts.reduce((a, p) => a + proj(p[0], p[1], p[2]).depth, 0) / pts.length;
     scene.faces.sort((a, b) => {
       if (a.isLabel) return 1;

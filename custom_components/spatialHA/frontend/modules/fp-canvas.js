@@ -201,7 +201,7 @@ export const FloorplanCanvasMixin = {
     },
 
     _handleFloorplanClick(e) {
-      const canvas = this.shadowRoot.getElementById("floorplan-canvas");
+      const canvas = this._fpCanvasEl();
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
       // CSS pixels (worldToScreen returns CSS px, canvas is DPR-scaled via setTransform)
@@ -211,7 +211,7 @@ export const FloorplanCanvasMixin = {
       if (this._contextMenu) {
         const pt = floor.points.find((p) => p.id === this._contextMenu.pointId);
         if (pt) {
-          const s = this._worldToScreen(pt.x, pt.y, floor);
+          const s = this._fpToScreen(pt.x, pt.y, floor);
           const dirs = [{ dx: 0, dy: -1 }, { dx: 1, dy: 0 }, { dx: 0, dy: 1 }, { dx: -1, dy: 0 }];
           for (const d of dirs) {
             const ax = s.x + d.dx * 40, ay = s.y + d.dy * 40;
@@ -234,7 +234,7 @@ export const FloorplanCanvasMixin = {
               this._contextMenu = null;
               this._saveFloorplan();
               this._render();
-              this._renderFloorplanCanvas();
+              this._fpRedraw();
               return;
             }
           }
@@ -242,7 +242,7 @@ export const FloorplanCanvasMixin = {
       }
       // Window placement mode: left-click places window origin (lower-left corner)
       if (this._placingWindow && e.button !== 2) {
-        const w = this._screenToWorld(sx, sy, floor);
+        const w = this._fpToWorld(sx, sy, floor);
         const cl = this._clampToFloor(floor, w.x, w.y);
         const defs = this._windowDefaults();
         this._fpPushUndo();
@@ -258,12 +258,12 @@ export const FloorplanCanvasMixin = {
         this._placingDoorType = null;
         this._saveFloorplan();
         this._render();
-        this._renderFloorplanCanvas();
+        this._fpRedraw();
         return;
       }
       // Door placement mode: left-click places a door of the pending type
       if (this._placingDoorType && e.button !== 2) {
-        const w = this._screenToWorld(sx, sy, floor);
+        const w = this._fpToWorld(sx, sy, floor);
         const cl = this._clampToFloor(floor, w.x, w.y);
         const defaults = this._doorDefaults();
         this._fpPushUndo();
@@ -283,17 +283,17 @@ export const FloorplanCanvasMixin = {
         this._placingWindow = false;
         this._saveFloorplan();
         this._render();
-        this._renderFloorplanCanvas();
+        this._fpRedraw();
         return;
       }
       for (const pt of floor.points) {
-        const s = this._worldToScreen(pt.x, pt.y, floor);
+        const s = this._fpToScreen(pt.x, pt.y, floor);
         if (Math.hypot(sx - s.x, sy - s.y) < 12) {
           if (e.button === 2) {
             this._contextMenu = { x: sx, y: sy, pointId: pt.id };
             this._selectedPointId = pt.id;
             this._selectedDoorId = null;
-            this._renderFloorplanCanvas();
+            this._fpRedraw();
             return;
           } else {
             this._selectedPointId = pt.id;
@@ -301,7 +301,7 @@ export const FloorplanCanvasMixin = {
             this._selectedDoorId = null;
             this._selectedWindowId = null;
             this._contextMenu = null;
-            this._renderFloorplanCanvas();
+            this._fpRedraw();
             return;
           }
         }
@@ -314,7 +314,7 @@ export const FloorplanCanvasMixin = {
           this._selectedPointId = null; this._selectedWallId = null; this._selectedWindowId = null; this._contextMenu = null;
           this._placingDoorType = null; this._placingWindow = false;
           this._render();
-          this._renderFloorplanCanvas();
+          this._fpRedraw();
           return;
         }
       }
@@ -326,35 +326,35 @@ export const FloorplanCanvasMixin = {
           this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._contextMenu = null;
           this._placingDoorType = null; this._placingWindow = false;
           this._render();
-          this._renderFloorplanCanvas();
+          this._fpRedraw();
           return;
         }
       }
       for (const wall of floor.walls) {
         const p1 = floor.points.find((p) => p.id === wall.p1), p2 = floor.points.find((p) => p.id === wall.p2);
         if (!p1 || !p2) continue;
-        const s1 = this._worldToScreen(p1.x, p1.y, floor), s2 = this._worldToScreen(p2.x, p2.y, floor);
+        const s1 = this._fpToScreen(p1.x, p1.y, floor), s2 = this._fpToScreen(p2.x, p2.y, floor);
         const len = Math.hypot(s2.x - s1.x, s2.y - s1.y) || 1;
         const dist = Math.abs((s2.y - s1.y) * sx - (s2.x - s1.x) * sy + s2.x * s1.y - s2.y * s1.x) / len;
         const dot = ((sx - s1.x) * (s2.x - s1.x) + (sy - s1.y) * (s2.y - s1.y)) / (len * len);
         if (dist < 10 && dot >= 0 && dot <= 1) {
-          this._selectedWallId = wall.id; this._selectedPointId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._contextMenu = null; this._renderFloorplanCanvas(); return;
+          this._selectedWallId = wall.id; this._selectedPointId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._contextMenu = null; this._fpRedraw(); return;
         }
       }
       this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._contextMenu = null;
       if (this._placingDoorType || this._placingWindow) { this._placingDoorType = null; this._placingWindow = false; this._render(); }
-      this._renderFloorplanCanvas();
+      this._fpRedraw();
     },
 
     _handleFloorplanDblClick(e) {
-      const canvas = this.shadowRoot.getElementById("floorplan-canvas");
+      const canvas = this._fpCanvasEl();
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
       const sx = (e.clientX - rect.left), sy = (e.clientY - rect.top);
       const floor = this._getActiveFloor();
       if (!floor) return;
       for (const pt of floor.points) {
-        const s = this._worldToScreen(pt.x, pt.y, floor);
+        const s = this._fpToScreen(pt.x, pt.y, floor);
         if (Math.hypot(sx - s.x, sy - s.y) < 12) {
           const unitLabel = this._floorplanUnits === "meters" ? "meters" : "feet/inches (e.g. 6' 11\")";
           const xs = prompt("New X (" + unitLabel + ")?", this._formatMetersForInput(pt.x));
@@ -368,7 +368,7 @@ export const FloorplanCanvasMixin = {
           pt.x = cl.x;
           pt.y = cl.y;
           this._saveFloorplan();
-          this._renderFloorplanCanvas();
+          this._fpRedraw();
           return;
         }
       }
@@ -377,14 +377,14 @@ export const FloorplanCanvasMixin = {
     _fpPointAt(sx, sy, floor, radius) {
       const r = radius || 12;
       for (const pt of (floor.points || [])) {
-        const s = this._worldToScreen(pt.x, pt.y, floor);
+        const s = this._fpToScreen(pt.x, pt.y, floor);
         if (Math.hypot(sx - s.x, sy - s.y) < r) return pt;
       }
       return null;
     },
 
     _handleFloorplanMouseDown(e) {
-      const canvas = this.shadowRoot.getElementById("floorplan-canvas");
+      const canvas = this._fpCanvasEl();
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
       const sx = (e.clientX - rect.left), sy = (e.clientY - rect.top);
@@ -409,13 +409,15 @@ export const FloorplanCanvasMixin = {
         return;
       }
       if (e.button !== 0) return;
-      // No point dragging (per request) - only pan on empty drag
+      // No point dragging (per request) - only pan on empty drag in 2D mode.
+      // In 3D mode the view changes via buttons only.
+      if (this._fpIs3D && this._fpIs3D()) return;
       this._floorplanPanning = true;
       this._floorplanPanStart = { x: e.clientX, y: e.clientY, ox: this._floorplanOffset.x, oy: this._floorplanOffset.y };
     },
 
     _handleFloorplanMouseMove(e) {
-      const canvas = this.shadowRoot.getElementById("floorplan-canvas");
+      const canvas = this._fpCanvasEl();
       if (!canvas) return;
       const floor = this._getActiveFloor();
       if (!floor) return;
@@ -427,7 +429,7 @@ export const FloorplanCanvasMixin = {
         // Hover target highlight
         const hov = this._fpPointAt(sx, sy, floor, 12);
         this._wallDrag.hoverId = hov && hov.id !== this._wallDrag.fromId ? hov.id : null;
-        this._renderFloorplanCanvas();
+        this._fpRedraw();
         return;
       }
       if (this._roomDrag) {
@@ -439,26 +441,26 @@ export const FloorplanCanvasMixin = {
         if (hit && !this._roomDrag.seen[hit.id]) {
           this._roomDrag.seen[hit.id] = true;
           this._roomDrag.pointIds.push(hit.id);
-          this._renderFloorplanCanvas();
+          this._fpRedraw();
         } else if (this._roomDrag.moved) {
-          this._renderFloorplanCanvas();
+          this._fpRedraw();
         }
         return;
       }
       if (this._floorplanPanning && this._floorplanPanStart) {
         this._floorplanOffset.x = this._floorplanPanStart.ox + (e.clientX - this._floorplanPanStart.x);
         this._floorplanOffset.y = this._floorplanPanStart.oy + (e.clientY - this._floorplanPanStart.y);
-        this._renderFloorplanCanvas();
+        this._fpRedraw();
       }
     },
 
     _handleFloorplanMouseUp(e) {
-      const canvas = this.shadowRoot.getElementById("floorplan-canvas");
+      const canvas = this._fpCanvasEl();
       const floor = this._getActiveFloor();
       if (this._wallDrag && floor) {
         const wd = this._wallDrag;
         this._wallDrag = null;
-        if (e && e.button !== undefined && e.button !== 2) { this._renderFloorplanCanvas(); return; }
+        if (e && e.button !== undefined && e.button !== 2) { this._fpRedraw(); return; }
         if (wd.moved && canvas) {
           const rect = canvas.getBoundingClientRect();
           const sx = (e.clientX - rect.left), sy = (e.clientY - rect.top);
@@ -473,20 +475,20 @@ export const FloorplanCanvasMixin = {
               this._suppressContextMenu = true;
               this._saveFloorplan();
               this._render();
-              this._renderFloorplanCanvas();
+              this._fpRedraw();
               return;
             }
             this._suppressContextMenu = true;
           }
         }
         // Not a drag (simple right-click handled in click handler for arrows)
-        this._renderFloorplanCanvas();
+        this._fpRedraw();
         return;
       }
       if (this._roomDrag && floor) {
         const rd = this._roomDrag;
         this._roomDrag = null;
-        if (e && e.button !== undefined && e.button !== 1) { this._renderFloorplanCanvas(); return; }
+        if (e && e.button !== undefined && e.button !== 1) { this._fpRedraw(); return; }
         if (rd.pointIds.length >= 3) {
           const name = prompt("Room name?", "Room " + ((floor.rooms || []).length + 1));
           if (name) {
@@ -494,13 +496,13 @@ export const FloorplanCanvasMixin = {
             floor.rooms.push({ id: "room_" + Date.now(), name: name, point_ids: [...rd.pointIds], color: "#6496ff" });
             this._saveFloorplan();
             this._render();
-            this._renderFloorplanCanvas();
+            this._fpRedraw();
             return;
           }
         } else if (rd.moved && rd.pointIds.length > 0) {
           alert("Need 3+ points for a room (middle-drag across points)");
         }
-        this._renderFloorplanCanvas();
+        this._fpRedraw();
         return;
       }
       if (this._floorplanPanning) { this._floorplanPanning = false; this._floorplanPanStart = null; }
@@ -512,7 +514,7 @@ export const FloorplanCanvasMixin = {
       if (e.key === "Escape" && (this._placingDoorType || this._placingWindow)) {
         this._placingDoorType = null;
         this._placingWindow = false;
-        this._render(); this._renderFloorplanCanvas();
+        this._render(); this._fpRedraw();
         return;
       }
       const mod = e.ctrlKey || e.metaKey;
@@ -585,7 +587,7 @@ export const FloorplanCanvasMixin = {
         }
         this._saveFloorplan();
         this._render();
-        this._renderFloorplanCanvas();
+        this._fpRedraw();
         return;
       }
       if ((e.key === "Delete" || e.key === "Backspace") && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement ? document.activeElement.tagName : "")) {
@@ -595,12 +597,12 @@ export const FloorplanCanvasMixin = {
           this._fpPushUndo();
           floor.windows = (floor.windows || []).filter((w) => w.id !== this._selectedWindowId);
           this._selectedWindowId = null;
-          this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+          this._saveFloorplan(); this._render(); this._fpRedraw();
         } else if (this._selectedDoorId) {
           this._fpPushUndo();
           floor.doors = (floor.doors || []).filter((d) => d.id !== this._selectedDoorId);
           this._selectedDoorId = null;
-          this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+          this._saveFloorplan(); this._render(); this._fpRedraw();
         } else if (this._selectedPointId) {
           this._fpPushUndo();
           const pid = this._selectedPointId;
@@ -608,12 +610,12 @@ export const FloorplanCanvasMixin = {
           floor.walls = (floor.walls || []).filter((w) => w.p1 !== pid && w.p2 !== pid);
           (floor.rooms || []).forEach((r) => { r.point_ids = (r.point_ids || []).filter((id) => id !== pid); });
           this._selectedPointId = null;
-          this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+          this._saveFloorplan(); this._render(); this._fpRedraw();
         } else if (this._selectedWallId) {
           this._fpPushUndo();
           floor.walls = (floor.walls || []).filter((w) => w.id !== this._selectedWallId);
           this._selectedWallId = null;
-          this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+          this._saveFloorplan(); this._render(); this._fpRedraw();
         }
       }
     },
@@ -623,6 +625,6 @@ export const FloorplanCanvasMixin = {
       const delta = e.deltaY > 0 ? 0.9 : 1.1;
       this._floorplanScale *= delta;
       this._floorplanScale = Math.max(5, Math.min(200, this._floorplanScale));
-      this._renderFloorplanCanvas();
+      this._fpRedraw();
     }
 };

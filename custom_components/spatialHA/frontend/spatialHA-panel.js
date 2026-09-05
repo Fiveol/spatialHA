@@ -4,7 +4,7 @@
  * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
 if (!customElements.get("spatialHA-panel")) {
-const SPATIALHA_MOD_VERSION = "0.9.1";
+const SPATIALHA_MOD_VERSION = "0.9.1.1";
 function spatialHAModUrl(name) {
   return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
 }
@@ -530,28 +530,20 @@ class SpatialHAPanel extends HTMLElement {
     const fp3d = this.shadowRoot.getElementById("floorplan-3d-canvas");
     if (fp3d) {
       setTimeout(() => { if (typeof this._renderFloorPreview3D === "function") this._renderFloorPreview3D(); }, 0);
-      fp3d.onmousedown = (e) => {
-        if (e.button !== 0) return;
-        this._fpRotating = true;
-        this._fpRotStart = { x: e.clientX, y: e.clientY, yaw: this._fpYawOff || 0, pitch: this._fpPitchOff || 0 };
-        fp3d.style.cursor = "grabbing";
+      // 3D view changes via buttons only; canvas edits like the 2D view.
+      fp3d.oncontextmenu = (e) => {
         e.preventDefault();
+        if (this._suppressContextMenu) { this._suppressContextMenu = false; return; }
+        this._handleFloorplanClick({ clientX: e.clientX, clientY: e.clientY, button: 2 });
       };
-      fp3d.onmousemove = (e) => {
-        if (!this._fpRotating || !this._fpRotStart) return;
-        this._fpYawOff = this._fpRotStart.yaw - (e.clientX - this._fpRotStart.x) * 0.4;
-        this._fpPitchOff = Math.max(-60, Math.min(60, this._fpRotStart.pitch + (e.clientY - this._fpRotStart.y) * 0.3));
-        if (typeof this._requestDraw === "function") this._requestDraw("fp3d", () => this._renderFloorPreview3D());
-        else this._renderFloorPreview3D();
-      };
-      fp3d.onmouseup = () => { this._fpRotating = false; fp3d.style.cursor = "grab"; };
-      fp3d.onmouseleave = () => { this._fpRotating = false; fp3d.style.cursor = "grab"; };
-      fp3d.onwheel = (e) => {
-        e.preventDefault();
-        this._fpZoom = Math.max(0.4, Math.min(3, (this._fpZoom || 1) * (e.deltaY > 0 ? 0.92 : 1.08)));
-        if (typeof this._requestDraw === "function") this._requestDraw("fp3d", () => this._renderFloorPreview3D());
-        else this._renderFloorPreview3D();
-      };
+      fp3d.onauxclick = (e) => { if (e.button === 1) e.preventDefault(); };
+      fp3d.onclick = (e) => { if (e.button !== 2) this._handleFloorplanClick({ clientX: e.clientX, clientY: e.clientY, button: 0 }); };
+      fp3d.ondblclick = (e) => this._handleFloorplanDblClick(e);
+      fp3d.onmousedown = (e) => this._handleFloorplanMouseDown(e);
+      fp3d.onmousemove = (e) => this._handleFloorplanMouseMove(e);
+      fp3d.onmouseup = (e) => this._handleFloorplanMouseUp(e);
+      fp3d.tabIndex = 0;
+      fp3d.onkeydown = (e) => this._handleFloorplanKeyDown(e);
     }
     const fpRetry = this.shadowRoot.getElementById("floorplan-retry");
     if (fpRetry) fpRetry.addEventListener("click", () => { this._floorplanError = null; this._fetchFloorplanOnce(); });

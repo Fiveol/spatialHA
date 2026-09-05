@@ -47,6 +47,50 @@ export const FloorplanDataMixin = {
       return this._floorplan.floors.find((f) => f.id === this._selectedFloorId) || this._floorplan.floors[0];
     },
 
+    _fpIs3D() {
+      return this._activeTab === "floorplan" && this._fpMode === "3d";
+    },
+
+    _fpCanvasEl() {
+      if (!this.shadowRoot) return null;
+      if (this._fpIs3D()) return this.shadowRoot.getElementById("floorplan-3d-canvas");
+      return this.shadowRoot.getElementById("floorplan-canvas");
+    },
+
+    _fpPickFit(floor) {
+      // Fit for picking on the editor 3D preview (slab height of active floor).
+      if (typeof this._fpPreviewFit !== "function") return null;
+      const info = this._fpPreviewFit();
+      if (!info || !info.fit) return null;
+      return info;
+    },
+
+    _fpToScreen(x, y, floor) {
+      if (this._fpIs3D() && typeof this._project3DFit === "function") {
+        const info = this._fpPickFit();
+        const f = floor || this._getActiveFloor();
+        if (info && f) return this._project3DFit(info.fit, x, y, 0.25);
+      }
+      return this._worldToScreen(x, y, floor);
+    },
+
+    _fpToWorld(sx, sy, floor) {
+      if (this._fpIs3D() && typeof this._unproject3DFit === "function") {
+        const info = this._fpPickFit();
+        if (info) {
+          const w = this._unproject3DFit(info.fit, sx, sy, 0.25);
+          if (w) return w;
+        }
+        return { x: 0, y: 0 };
+      }
+      return this._screenToWorld(sx, sy, floor);
+    },
+
+    _fpRedraw() {
+      if (this._fpIs3D() && typeof this._renderFloorPreview3D === "function") this._renderFloorPreview3D();
+      else this._renderFloorplanCanvas();
+    },
+
     _worldToScreen(x, y, floor) {
       const f = floor || this._getActiveFloor();
       if (!f) return { x: 0, y: 0 };
@@ -93,8 +137,8 @@ export const FloorplanDataMixin = {
       const w = parseFloat(win.width) || 1.2;
       const x = parseFloat(win.x) || 0, y = parseFloat(win.y) || 0;
       const dx = Math.cos(rad), dy = Math.sin(rad);
-      const s1 = this._worldToScreen(x, y, floor);
-      const s2 = this._worldToScreen(x + dx * w, y + dy * w, floor);
+      const s1 = this._fpToScreen(x, y, floor);
+      const s2 = this._fpToScreen(x + dx * w, y + dy * w, floor);
       return { s1, s2, rad, w, x, y, dx, dy };
     },
 
@@ -118,7 +162,7 @@ export const FloorplanDataMixin = {
       const x = parseFloat(door.x) || 0, y = parseFloat(door.y) || 0;
       const ax = x - dx * w / 2, ay = y - dy * w / 2;
       const bx = x + dx * w / 2, by = y + dy * w / 2;
-      const s1 = this._worldToScreen(ax, ay, floor), s2 = this._worldToScreen(bx, by, floor);
+      const s1 = this._fpToScreen(ax, ay, floor), s2 = this._fpToScreen(bx, by, floor);
       return { ax, ay, bx, by, s1, s2, w, rad };
     },
 
