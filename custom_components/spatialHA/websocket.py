@@ -49,6 +49,110 @@ async def _get_version(hass: HomeAssistant) -> str:
     return ver
 
 
+def _parse_ibeacon(manufacturer_data: dict | None, service_data: dict | None = None) -> dict | None:
+    """Parse iBeacon from manufacturer_data. Optimized, no blocking.
+
+    iBeacon is Apple 0x004C: 02 15 + UUID(16) + Major(2) + Minor(2) + TxPower(1)
+    Returns {uuid, major, minor, tx_power} or None.
+    Handles both int keys and str keys, bytes/bytearray.
+    """
+    if not manufacturer_data:
+        return None
+    # Fast path: look for Apple key 76 (0x004C)
+    data = None
+    # Try common key types
+    if isinstance(manufacturer_data, dict):
+        data = manufacturer_data.get(0x004C)
+        if data is None:
+            data = manufacturer_data.get(76)
+        if data is None:
+            data = manufacturer_data.get("76")
+            if data is None:
+                data = manufacturer_data.get("0x004C")
+        # Fallback scan
+        if data is None:
+            for k, v in manufacturer_data.items():
+                try:
+                    if int(k) == 0x004C:
+                        data = v
+                        break
+                except Exception:
+                    continue
+    if not data or len(data) < 23:
+        return None
+    # Data should start with 02 15 for iBeacon
+    # Some implementations include extra prefix, search for 02 15
+    b = bytes(data) if not isinstance(data, (bytes, bytearray)) else data
+    # Find iBeacon marker
+    idx = -1
+    # Optimized search for 0x02 0x15
+    for i in range(len(b) - 22):
+        if b[i] == 0x02 and b[i + 1] == 0x15:
+            idx = i
+            break
+    if idx == -1:
+        # Also check if data directly is iBeacon without prefix (some stacks strip 02 15)
+        if len(b) >= 21 and b[0] != 0x02:
+            # Try to interpret as raw UUID
+            pass
+        return None
+    if idx + 23 > len(b):
+        return None
+    try:
+        uuid_bytes = b[idx + 2 : idx + 18]
+        major = int.from_bytes(b[idx + 18 : idx + 20], "big")
+        minor = int.from_bytes(b[idx + 20 : idx + 22], "big")
+        tx_power = int.from_bytes(b[idx + 22 : idx + 23], "big", signed=True)
+        # Format UUID 8-4-4-4-12
+        hex_str = uuid_bytes.hex()
+        uuid = f"{hex_str[0:8]}-{hex_str[8:12]}-{hex_str[12:16]}-{hex_str[16:20]}-{hex_str[20:32]}".upper()
+        return {"uuid": uuid, "major": major, "minor": minor, "tx_power": tx_power}
+    except Exception:
+        return None
+
+
+def _get_ibeacon_from_info(info) -> dict | None:
+    """Extract iBeacon from BluetoothServiceInfoBleak info, optimized."""
+    try:
+        # Try manufacturer_data directly
+        mfg = getattr(info, "manufacturer_data", None)
+        if mfg:
+            parsed = _parse_ibeacon(mfg, None)
+            if parsed:
+                return parsed
+        # Try advertisement
+        adv = getattr(info, "advertisement", None)
+        if adv:
+            mfg2 = getattr(adv, "manufacturer_data", None)
+            if mfg2:
+                parsed = _parse_ibeacon(mfg2, None)
+                if parsed:
+                    return parsed
+            # Also try service_data for iBeacon UUID
+            svc = getattr(adv, "service_data", None) or getattr(info, "service_data", None)
+            if svc and isinstance(svc, dict):
+                for v in svc.values():
+                    try:
+                        if isinstance(v, (bytes, bytearray)) and len(v) >= 16:
+                            # Try to parse as UUID
+                            pass
+                    except Exception:
+                        continue
+        # Try device
+        dev = getattr(info, "device", None)
+        if dev and hasattr(dev, "details"):
+            details = getattr(dev, "details", None)
+            if isinstance(details, dict):
+                props = details.get("props") or details.get("manufacturer_data")
+                if props:
+                    parsed = _parse_ibeacon(props, None)
+                    if parsed:
+                        return parsed
+    except Exception:
+        pass
+    return None
+
+
 @websocket_api.websocket_command({vol.Required("type"): "spatialHA/get_version"})
 @websocket_api.async_response
 async def handle_get_version(
@@ -230,6 +334,23 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
                 except Exception:  # noqa: BLE001
                     uuids = []
 
+                # iBeacon parsing - optimized, handles devices without Names
+                ibeacon = _get_ibeacon_from_info(info)
+                # If iBeacon found and name is generic (address), use iBeacon UUID as name fallback
+                if ibeacon and (not name or name == address or name.strip() == ""):
+                    # Use short UUID + major/minor for display, keep full UUID in data
+                    try:
+                        name = f"iBeacon {ibeacon['uuid'][:8]} ({ibeacon['major']}/{ibeacon['minor']})"
+                    except Exception:
+                        name = f"iBeacon {ibeacon.get('uuid','')[:8]}"
+                # Ensure iBeacon UUID is also in uuids for filtering
+                if ibeacon and ibeacon.get("uuid"):
+                    try:
+                        if ibeacon["uuid"] not in uuids:
+                            uuids.append(ibeacon["uuid"])
+                    except Exception:
+                        pass
+
                 # Per-scanner devices for this address
                 per_scanner: dict[str, int | None] = {}
                 scanner_devices = []
@@ -272,6 +393,7 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
                                     "source": str(sc_source),
                                     "scanner_name": str(sc_source),
                                     "service_uuids": uuids,
+                                    "ibeacon": ibeacon,
                                 }
                             )
                         except Exception:  # noqa: BLE001
@@ -287,6 +409,7 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
                             "source": str(source),
                             "scanner_name": str(source),
                             "service_uuids": uuids,
+                            "ibeacon": ibeacon,
                         }
                     )
 
@@ -298,6 +421,7 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
                         "rssi": rssi,
                         "service_uuids": uuids,
                         "per_scanner": per_scanner,
+                        "ibeacon": ibeacon,
                     }
                 else:
                     # Merge per_scanner
@@ -305,6 +429,17 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
                     # Update name if more complete
                     if name and name != address and devices_map[address]["name"] == address:
                         devices_map[address]["name"] = str(name)
+                    # Update iBeacon if newly discovered
+                    if ibeacon and not devices_map[address].get("ibeacon"):
+                        devices_map[address]["ibeacon"] = ibeacon
+                    # Merge service_uuids
+                    try:
+                        existing_uuids = set(devices_map[address].get("service_uuids", []))
+                        for u in uuids:
+                            if u not in existing_uuids:
+                                devices_map[address].setdefault("service_uuids", []).append(u)
+                    except Exception:
+                        pass
 
             except Exception as err:  # noqa: BLE001
                 LOGGER.debug("Error processing discovered info %s: %s", info, err)
@@ -324,6 +459,7 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
                             "source": src,
                             "scanner_name": src,
                             "service_uuids": dev.get("service_uuids", []),
+                            "ibeacon": dev.get("ibeacon"),
                         }
                     )
 
@@ -331,6 +467,75 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
     except Exception as err:  # noqa: BLE001
         LOGGER.error("Failed to get BLE data: %s", err)
         return {"scanners": [], "sightings": [], "devices": [], "error": str(err)}
+
+
+def _get_gps_data(hass: HomeAssistant) -> dict:
+    """Get GPS device_tracker entities from HASS, optimized."""
+    try:
+        # Use entity registry and state machine, cached
+        from homeassistant.helpers import entity_registry as er
+        from homeassistant.helpers import device_registry as dr
+
+        # Fast path: get all device_tracker states
+        states = hass.states.async_all("device_tracker")  # type: ignore[attr-defined]
+        # Alternative: hass.states.async_all() and filter?
+        if not states:
+            # Fallback
+            states = [s for s in hass.states.async_all() if s.entity_id.startswith("device_tracker.")]
+
+        gps_entities: list[dict] = []
+        # Cache entity registry
+        ent_reg = None
+        dev_reg = None
+        try:
+            ent_reg = er.async_get(hass)
+            dev_reg = dr.async_get(hass)
+        except Exception:
+            pass
+
+        for state in states:
+            try:
+                entity_id = state.entity_id
+                # Get entity entry for icon/device
+                icon = None
+                device_name = None
+                try:
+                    if ent_reg:
+                        ent_entry = ent_reg.async_get(entity_id)
+                        if ent_entry:
+                            icon = getattr(ent_entry, "icon", None) or getattr(ent_entry, "original_icon", None)
+                            device_name = ent_entry.device_id
+                            if dev_reg and device_name:
+                                dev_entry = dev_reg.async_get(device_name)
+                                if dev_entry and dev_entry.name:
+                                    device_name = dev_entry.name
+                except Exception:
+                    pass
+
+                attrs = dict(state.attributes) if hasattr(state, "attributes") else {}
+                gps_entities.append(
+                    {
+                        "entity_id": entity_id,
+                        "state": state.state,
+                        "name": state.name or attrs.get("friendly_name") or entity_id,
+                        "icon": icon or attrs.get("icon") or "mdi:crosshairs-gps",
+                        "latitude": attrs.get("latitude"),
+                        "longitude": attrs.get("longitude"),
+                        "gps_accuracy": attrs.get("gps_accuracy"),
+                        "battery": attrs.get("battery"),
+                        "source_type": attrs.get("source_type"),
+                        "friendly_name": attrs.get("friendly_name"),
+                    }
+                )
+            except Exception:
+                continue
+
+        # Sort by entity_id for stable UI
+        gps_entities.sort(key=lambda x: x["entity_id"])
+        return {"entities": gps_entities, "count": len(gps_entities)}
+    except Exception as err:  # noqa: BLE001
+        LOGGER.debug("Failed to get GPS data: %s", err)
+        return {"entities": [], "count": 0, "error": str(err)}
 
 
 @websocket_api.websocket_command({vol.Required("type"): "spatialHA/ble/get_data"})
@@ -430,6 +635,85 @@ async def handle_settings_set(
         connection.send_error(msg["id"], "settings_set_failed", str(err))
 
 
+@websocket_api.websocket_command({vol.Required("type"): "spatialHA/gps/list"})
+@websocket_api.async_response
+async def handle_gps_list(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """List all device_tracker entities (GPS) from HASS."""
+    try:
+        data = _get_gps_data(hass)
+        connection.send_result(msg["id"], data)
+    except Exception as err:  # noqa: BLE001
+        LOGGER.error("GPS list failed: %s", err)
+        connection.send_error(msg["id"], "gps_list_failed", str(err))
+
+
+@websocket_api.websocket_command({vol.Required("type"): "spatialHA/gps/subscribe"})
+@websocket_api.async_response
+async def handle_gps_subscribe(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Subscribe to GPS updates (push when device_tracker changes)."""
+    try:
+        # Use same pattern as BLE subscribe but for GPS
+        data = _get_gps_data(hass)
+        subscribers = hass.data.setdefault(DOMAIN, {}).setdefault("gps_subscribers", set())
+        subscribers.add((connection, msg["id"]))
+
+        def _unsub():
+            try:
+                subscribers.discard((connection, msg["id"]))
+            except Exception:
+                pass
+
+        connection.subscriptions[msg["id"]] = _unsub
+        connection.send_result(msg["id"])
+        connection.send_message(websocket_api.event_message(msg["id"], {"type": "gps_update", "data": data}))
+
+        # Also listen to state changes for device_tracker
+        from homeassistant.helpers.event import async_track_state_change_event
+
+        def _state_listener(event):
+            try:
+                # Only push if device_tracker changed
+                if event and event.data and event.data.get("entity_id", "").startswith("device_tracker."):
+                    new_data = _get_gps_data(hass)
+                    for conn, mid in list(subscribers):
+                        try:
+                            conn.send_message(websocket_api.event_message(mid, {"type": "gps_update", "data": new_data}))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        unsub = async_track_state_change_event(hass, "device_tracker", _state_listener)  # type: ignore[attr-defined]
+        # Store unsub for cleanup
+        orig_unsub = connection.subscriptions[msg["id"]]
+
+        def _combined_unsub():
+            try:
+                orig_unsub()
+            except Exception:
+                pass
+            try:
+                unsub()
+            except Exception:
+                pass
+
+        connection.subscriptions[msg["id"]] = _combined_unsub
+    except Exception as err:  # noqa: BLE001
+        LOGGER.error("GPS subscribe failed: %s", err)
+        try:
+            connection.send_error(msg["id"], "gps_subscribe_failed", str(err))
+        except Exception:
+            pass
+
+
 @websocket_api.websocket_command({vol.Required("type"): "spatialHA/ble/subscribe"})
 @websocket_api.async_response
 async def handle_ble_subscribe(
@@ -502,7 +786,7 @@ async def handle_targets_list(
         ble_data = hass.data.get(DOMAIN, {}).get("ble_data")
         enriched = []
         for t in targets:
-            enriched.append({**t, "state": _compute_target_state(t, ble_data), "ble_devices": t.get("ble_devices") or t.get("devices") or []})
+            enriched.append({**t, "state": _compute_target_state(t, ble_data, hass), "ble_devices": t.get("ble_devices") or t.get("devices") or [], "gps_entities": t.get("gps_entities") or []})
         connection.send_result(msg["id"], {"targets": enriched})
     except Exception as err:  # noqa: BLE001
         LOGGER.error("targets list failed: %s", err)
@@ -538,8 +822,11 @@ async def handle_targets_create(
             ttype = "Other"
         icon = msg.get("icon") or ("mdi:account" if ttype == "Person" else "mdi:help-circle")
         ble_devices = msg.get("ble_devices") or msg.get("devices") or []
-        # Normalize MACs to upper
         ble_devices = [str(a).upper() for a in ble_devices if a]
+        gps_entities = msg.get("gps_entities") or msg.get("gps_devices") or msg.get("device_trackers") or []
+        if isinstance(gps_entities, str):
+            gps_entities = [gps_entities]
+        gps_entities = [str(e).strip() for e in gps_entities if e]
 
         new_target = {
             "id": str(uuid.uuid4()),
@@ -547,6 +834,7 @@ async def handle_targets_create(
             "type": ttype,
             "icon": icon,
             "ble_devices": ble_devices,
+            "gps_entities": gps_entities,
         }
         targets.append(new_target)
         await _async_save_targets(hass, targets)
@@ -612,7 +900,7 @@ async def handle_targets_create(
             ble_data = hass.data.get(DOMAIN, {}).get("ble_data")
             enriched = []
             for t in targets:
-                enriched.append({**t, "state": _compute_target_state(t, ble_data), "ble_devices": t.get("ble_devices") or []})
+                enriched.append({**t, "state": _compute_target_state(t, ble_data, hass), "ble_devices": t.get("ble_devices") or [], "gps_entities": t.get("gps_entities") or []})
             for conn, mid in list(subs):
                 try:
                     conn.send_message(ws_api.event_message(mid, {"type": "targets_update", "targets": enriched}))
@@ -621,7 +909,7 @@ async def handle_targets_create(
         except Exception:  # noqa: BLE001
             pass
 
-        connection.send_result(msg["id"], {**new_target, "state": _compute_target_state(new_target, hass.data.get(DOMAIN, {}).get("ble_data"))})
+        connection.send_result(msg["id"], {**new_target, "state": _compute_target_state(new_target, hass.data.get(DOMAIN, {}).get("ble_data"), hass), "gps_entities": new_target.get("gps_entities") or []})
     except Exception as err:  # noqa: BLE001
         LOGGER.error("targets create failed: %s", err)
         connection.send_error(msg["id"], "targets_create_failed", str(err))
@@ -672,6 +960,11 @@ async def handle_targets_update(
         if "ble_devices" in msg or "devices" in msg:
             ble_devices = msg.get("ble_devices") or msg.get("devices") or []
             found["ble_devices"] = [str(a).upper() for a in ble_devices if a]
+        if "gps_entities" in msg or "gps_devices" in msg or "device_trackers" in msg:
+            gps_entities = msg.get("gps_entities") or msg.get("gps_devices") or msg.get("device_trackers") or []
+            if isinstance(gps_entities, str):
+                gps_entities = [gps_entities]
+            found["gps_entities"] = [str(e).strip() for e in gps_entities if e]
 
         await _async_save_targets(hass, targets)
 
@@ -683,7 +976,7 @@ async def handle_targets_update(
             ble_data = hass.data.get(DOMAIN, {}).get("ble_data")
             enriched = []
             for t in targets:
-                enriched.append({**t, "state": _compute_target_state(t, ble_data), "ble_devices": t.get("ble_devices") or []})
+                enriched.append({**t, "state": _compute_target_state(t, ble_data, hass), "ble_devices": t.get("ble_devices") or [], "gps_entities": t.get("gps_entities") or []})
             for conn, mid in list(subs):
                 try:
                     conn.send_message(ws_api.event_message(mid, {"type": "targets_update", "targets": enriched}))
@@ -692,7 +985,7 @@ async def handle_targets_update(
         except Exception:  # noqa: BLE001
             pass
 
-        connection.send_result(msg["id"], {**found, "state": _compute_target_state(found, hass.data.get(DOMAIN, {}).get("ble_data"))})
+        connection.send_result(msg["id"], {**found, "state": _compute_target_state(found, hass.data.get(DOMAIN, {}).get("ble_data"), hass), "gps_entities": found.get("gps_entities") or []})
     except Exception as err:  # noqa: BLE001
         LOGGER.error("targets update failed: %s", err)
         connection.send_error(msg["id"], "targets_update_failed", str(err))
@@ -741,7 +1034,7 @@ async def handle_targets_delete(
             ble_data = hass.data.get(DOMAIN, {}).get("ble_data")
             enriched = []
             for t in new_targets:
-                enriched.append({**t, "state": _compute_target_state(t, ble_data), "ble_devices": t.get("ble_devices") or []})
+                enriched.append({**t, "state": _compute_target_state(t, ble_data, hass), "ble_devices": t.get("ble_devices") or [], "gps_entities": t.get("gps_entities") or []})
             for conn, mid in list(subs):
                 try:
                     conn.send_message(ws_api.event_message(mid, {"type": "targets_update", "targets": enriched}))
@@ -774,7 +1067,7 @@ async def handle_targets_subscribe(
         ble_data = hass.data.get(DOMAIN, {}).get("ble_data")
         enriched = []
         for t in targets:
-            enriched.append({**t, "state": _compute_target_state(t, ble_data), "ble_devices": t.get("ble_devices") or []})
+            enriched.append({**t, "state": _compute_target_state(t, ble_data, hass), "ble_devices": t.get("ble_devices") or [], "gps_entities": t.get("gps_entities") or []})
 
         subs = hass.data.setdefault(DOMAIN, {}).setdefault("target_subscribers", set())
         subs.add((connection, msg["id"]))
@@ -814,6 +1107,8 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, handle_settings_get)
     websocket_api.async_register_command(hass, handle_settings_set)
     websocket_api.async_register_command(hass, handle_ble_subscribe)
+    websocket_api.async_register_command(hass, handle_gps_list)
+    websocket_api.async_register_command(hass, handle_gps_subscribe)
     websocket_api.async_register_command(hass, handle_targets_list)
     websocket_api.async_register_command(hass, handle_targets_create)
     websocket_api.async_register_command(hass, handle_targets_update)
