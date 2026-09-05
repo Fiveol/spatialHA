@@ -772,8 +772,8 @@ export const FloorplanCanvasMixin = {
         this._fpRedraw();
         return;
       }
-      // Camera keys: WASDQE moves/zooms, arrows zoom/look. Works in edit mode too,
-      // but never while typing or with Ctrl/Cmd held.
+      // Camera keys: WASDQE moves/zooms, +/- zoom, arrows zoom/look.
+      // Works in edit mode too, but never while typing or with Ctrl/Cmd held.
       const mod2 = e.ctrlKey || e.metaKey || e.altKey;
       const typing2 = /INPUT|SELECT|TEXTAREA/.test(document.activeElement ? document.activeElement.tagName : "");
       if (!mod2 && !typing2) {
@@ -786,8 +786,8 @@ export const FloorplanCanvasMixin = {
           else if (k === "s" || e.key === "ArrowDown") this._floorplanOffset.y -= PAN;
           else if (k === "a" || e.key === "ArrowLeft") this._floorplanOffset.x += PAN;
           else if (k === "d" || e.key === "ArrowRight") this._floorplanOffset.x -= PAN;
-          else if (k === "q") this._floorplanScale = Math.max(5, this._floorplanScale / 1.12);
-          else if (k === "e") this._floorplanScale = Math.min(200, this._floorplanScale * 1.12);
+          else if (k === "q" || e.key === "-") this._floorplanScale = Math.max(5, this._floorplanScale / 1.12);
+          else if (k === "e" || e.key === "=" || e.key === "+") this._floorplanScale = Math.min(200, this._floorplanScale * 1.12);
           else handled = false;
           if (handled) { e.preventDefault(); this._fpRedraw(); return; }
         } else {
@@ -820,8 +820,8 @@ export const FloorplanCanvasMixin = {
           else if (k === "s") p.panY -= PAN;
           else if (k === "a") p.panX += PAN;
           else if (k === "d") p.panX -= PAN;
-          else if (k === "q") p.zoom = Math.max(0.4, p.zoom / 1.12);
-          else if (k === "e") p.zoom = Math.min(3, p.zoom * 1.12);
+          else if (k === "q" || e.key === "-") p.zoom = Math.max(0.4, p.zoom / 1.12);
+          else if (k === "e" || e.key === "=" || e.key === "+") p.zoom = Math.min(3, p.zoom * 1.12);
           else if (e.key === "ArrowUp") p.pitch = Math.max(-60, p.pitch - ANG);
           else if (e.key === "ArrowDown") p.pitch = Math.min(60, p.pitch + ANG);
           else if (e.key === "ArrowLeft") p.yaw -= ANG;

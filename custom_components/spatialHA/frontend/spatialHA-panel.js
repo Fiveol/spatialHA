@@ -4,7 +4,7 @@
  * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
 if (!customElements.get("spatialHA-panel")) {
-const SPATIALHA_MOD_VERSION = "0.9.1.4";
+const SPATIALHA_MOD_VERSION = "0.9.1.5";
 function spatialHAModUrl(name) {
   return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
 }
@@ -303,7 +303,7 @@ class SpatialHAPanel extends HTMLElement {
         <div style="border:1px solid #333; border-radius:8px; overflow:hidden; background:#14161a;">
           <canvas id="home-iso-canvas" width="800" height="420" style="display:block; width:100%; height:420px; background:#14161a; cursor:grab;"></canvas>
         </div>
-        <p><small>Drag to rotate. Scroll to zoom. Keys: WASD move, QE zoom, arrows look.</small></p>
+        <p><small>Drag to rotate. Scroll to zoom. Keys: WASD move, QE or +/- zoom, arrows look.</small></p>
       </div>
     `;
 
