@@ -3,8 +3,11 @@
  * Frontend NEVER queries directly. All data goes via backend WebSocket
  * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
-if (!customElements.get("spatialHA-panel")) {
-const SPATIALHA_MOD_VERSION = "0.9.1.9";
+// Note: registry lookups are case-sensitive, so always use the lowercase
+// tag here. A mixed-case guard never matches and lets a second execution
+// slip through to customElements.define, which throws "already been used".
+if (!customElements.get("spatialha-panel")) {
+const SPATIALHA_MOD_VERSION = "0.9.1.10";
 function spatialHAModUrl(name) {
   return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
 }
@@ -964,7 +967,12 @@ class SpatialHAPanel extends HTMLElement {
 
 }
 
-if (!customElements.get("spatialHA-panel")) {
-  customElements.define("spatialHA-panel", SpatialHAPanel);
+if (!customElements.get("spatialha-panel")) {
+  try {
+    customElements.define("spatialha-panel", SpatialHAPanel);
+  } catch (e) {
+    // Already registered (script executed twice): reuse the existing one.
+    console.warn("spatialHA panel already registered", e);
+  }
 }
-} // close outer guard if (!customElements.get("spatialHA-panel"))
+} // close outer guard if (!customElements.get("spatialha-panel"))

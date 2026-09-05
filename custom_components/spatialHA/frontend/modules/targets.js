@@ -72,7 +72,7 @@ export const TargetsMixin = {
         });
         this._showAddForm = false;
         this._editingTarget = null;
-        this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [] };
+        this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [], gps_entities: [] };
         // Targets will be pushed via subscription, but also fetch
         this._fetchTargetsOnce();
       } catch (e) {
@@ -94,7 +94,7 @@ export const TargetsMixin = {
         });
         this._editingTarget = null;
         this._showAddForm = false;
-        this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [] };
+        this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [], gps_entities: [] };
         this._fetchTargetsOnce();
       } catch (e) {
         alert("Failed to update target: " + (e.message || String(e)));
@@ -155,6 +155,7 @@ export const TargetsMixin = {
 
     _toggleBleDevice(addr) {
       const upper = String(addr).toUpperCase();
+      if (!Array.isArray(this._targetForm.ble_devices)) this._targetForm.ble_devices = [];
       const idx = this._targetForm.ble_devices.findIndex(a => String(a).toUpperCase() === upper);
       if (idx >= 0) this._targetForm.ble_devices.splice(idx, 1);
       else this._targetForm.ble_devices.push(upper);
@@ -162,6 +163,7 @@ export const TargetsMixin = {
     },
 
     _toggleGpsEntity(entity_id) {
+      if (!Array.isArray(this._targetForm.gps_entities)) this._targetForm.gps_entities = [];
       const idx = this._targetForm.gps_entities.indexOf(entity_id);
       if (idx >= 0) this._targetForm.gps_entities.splice(idx, 1);
       else this._targetForm.gps_entities.push(entity_id);

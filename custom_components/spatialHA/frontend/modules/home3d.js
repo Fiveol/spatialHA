@@ -174,6 +174,10 @@ export const Home3DMixin = {
     const faces = [];
     const lines = [];
     const dots = [];
+    // Tracked-address lookup, built once per scene (not per position).
+    const _trackedArr = (typeof this !== "undefined" && Array.isArray(this._trackedDevices)) ? this._trackedDevices : null;
+    const _trackedSet = _trackedArr === null ? null : new Set(_trackedArr.map((a) => String(a).toUpperCase()));
+    const _showAllPos = (typeof this !== "undefined" && this._showAllDevices) || _trackedSet === null;
     floors.forEach((floor, fi) => {
       const z0 = bases[fi];
       const h = parseFloat(floor.height) || 3;
@@ -227,11 +231,9 @@ export const Home3DMixin = {
       // No stem lines: floating labeled dots only.
       if (!(opts && opts.positions === false) && (typeof this === "undefined" || this._showPositions !== false)) {
         const allPos = (typeof this !== "undefined" && this._bleData && this._bleData.positions) || [];
-        const tracked = (typeof this !== "undefined" && Array.isArray(this._trackedDevices)) ? this._trackedDevices : null;
-        const showAll = (typeof this !== "undefined" && this._showAllDevices) || tracked === null;
         for (const pos of allPos) {
           if (pos.floor_id !== floor.id) continue;
-          if (!showAll && !tracked.includes(String(pos.address || "").toUpperCase())) continue;
+          if (!_showAllPos && !_trackedSet.has(String(pos.address || "").toUpperCase())) continue;
           const pz = (typeof pos.z === "number" && isFinite(pos.z)) ? pos.z : z0 + 0.6;
           const label = String(pos.name || pos.address || "");
           dots.push({ p: [pos.x, pos.y, pz], fill: "#f59e0b", label });

@@ -43,9 +43,13 @@ async def handle_targets_list(
         vol.Required("type"): "spatialHA/targets/create",
         vol.Required("name"): str,
         vol.Optional("target_type", default="Other"): str,
+        vol.Optional("type"): str,
         vol.Optional("icon"): str,
         vol.Optional("ble_devices"): [str],
         vol.Optional("devices"): [str],
+        vol.Optional("gps_entities"): [str],
+        vol.Optional("gps_devices"): [str],
+        vol.Optional("device_trackers"): [str],
     }
 )
 @websocket_api.async_response
@@ -171,6 +175,9 @@ async def handle_targets_create(
         vol.Optional("icon"): str,
         vol.Optional("ble_devices"): [str],
         vol.Optional("devices"): [str],
+        vol.Optional("gps_entities"): [str],
+        vol.Optional("gps_devices"): [str],
+        vol.Optional("device_trackers"): [str],
     }
 )
 @websocket_api.async_response
