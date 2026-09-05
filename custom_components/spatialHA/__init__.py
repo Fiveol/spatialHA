@@ -224,6 +224,7 @@ def _get_floorplan_store(hass: HomeAssistant) -> Store:
 
 DOOR_TYPES = ("Door", "Double Door", "Garage Door")
 DEFAULT_DOOR_DEFAULTS = {"Door": 0.9, "Double Door": 1.6, "Garage Door": 2.4}
+DEFAULT_WINDOW = {"width": 1.2, "height": 1.2, "height_from_floor": 0.9}
 
 
 def _default_floorplan() -> dict:
@@ -232,6 +233,7 @@ def _default_floorplan() -> dict:
         "units": "meters",  # display units, internal is meters
         "active_floor_id": "floor_1",
         "door_defaults": dict(DEFAULT_DOOR_DEFAULTS),
+        "window_defaults": dict(DEFAULT_WINDOW),
         "floors": [
             {
                 "id": "floor_1",
@@ -248,6 +250,8 @@ def _default_floorplan() -> dict:
                 "walls": [],
                 "rooms": [],
                 "doors": [],
+                "windows": [],
+                "windows": [],
             }
         ],
     }
@@ -285,6 +289,9 @@ async def _async_load_floorplan(hass: HomeAssistant) -> dict:
     data.setdefault("door_defaults", dict(DEFAULT_DOOR_DEFAULTS))
     for k, v in DEFAULT_DOOR_DEFAULTS.items():
         data["door_defaults"].setdefault(k, v)
+    data.setdefault("window_defaults", dict(DEFAULT_WINDOW))
+    for k, v in DEFAULT_WINDOW.items():
+        data["window_defaults"].setdefault(k, v)
     # Ensure each floor has required fields
     for floor in data.get("floors", []):
         floor.setdefault("offset_x", 0.0)
@@ -298,6 +305,7 @@ async def _async_load_floorplan(hass: HomeAssistant) -> dict:
         floor.setdefault("walls", [])
         floor.setdefault("rooms", [])
         floor.setdefault("doors", [])
+        floor.setdefault("windows", [])
         # Normalize doors
         for door in floor["doors"]:
             door.setdefault("type", "Door")
@@ -307,6 +315,23 @@ async def _async_load_floorplan(hass: HomeAssistant) -> dict:
             door.setdefault("swing", "right" if door["type"] == "Door" else ("left" if door["type"] == "Double Door" else "up"))
             if "width" not in door or not isinstance(door["width"], (int, float)) or door["width"] <= 0:
                 door["width"] = data["door_defaults"].get(door["type"], 0.9)
+        # Normalize windows (origin = lower left corner, meters internally)
+        for win in floor["windows"]:
+            win.setdefault("rotation", 0.0)
+            for kk in ("width", "height", "height_from_floor"):
+                try:
+                    vv = float(win.get(kk, 0) or 0)
+                except Exception:
+                    vv = 0
+                if vv <= 0:
+                    vv = data["window_defaults"].get(kk, DEFAULT_WINDOW[kk])
+                win[kk] = vv
+            try:
+                win["x"] = float(win.get("x", 0) or 0)
+                win["y"] = float(win.get("y", 0) or 0)
+            except Exception:
+                win["x"] = 0.0
+                win["y"] = 0.0
         if not floor["points"]:
             floor["points"] = [{"id": "point_1", "x": 0.0, "y": 0.0, "label": ""}]
         # Clamp existing points into dimensions

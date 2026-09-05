@@ -51,6 +51,8 @@ class SpatialHAPanel extends HTMLElement {
     this._selectedRoomId = null;
     this._selectedDoorId = null;
     this._placingDoorType = null;
+    this._selectedWindowId = null;
+    this._placingWindow = false;
     this._contextMenu = null; // {x,y,pointId}
     this._dragging = null;
     this._floorplanScale = 40; // px per meter
@@ -420,6 +422,35 @@ class SpatialHAPanel extends HTMLElement {
       "Garage Door": parseFloat(d["Garage Door"]) || 2.4,
     };
   }
+  _windowDefaults() {
+    const d = (this._floorplan && this._floorplan.window_defaults) || {};
+    return {
+      width: parseFloat(d.width) || 1.2,
+      height: parseFloat(d.height) || 1.2,
+      height_from_floor: parseFloat(d.height_from_floor) || 0.9,
+    };
+  }
+  _windowSeg(win, floor) {
+    // Origin = lower-left corner; segment along rotation dir, length = width
+    const rad = (parseFloat(win.rotation) || 0) * Math.PI / 180;
+    const w = parseFloat(win.width) || 1.2;
+    const x = parseFloat(win.x) || 0, y = parseFloat(win.y) || 0;
+    const dx = Math.cos(rad), dy = Math.sin(rad);
+    const s1 = this._worldToScreen(x, y, floor);
+    const s2 = this._worldToScreen(x + dx * w, y + dy * w, floor);
+    return { s1, s2, rad, w, x, y, dx, dy };
+  }
+  _windowHitTest(sx, sy, floor, radius) {
+    const r = radius || 10;
+    for (const win of (floor.windows || [])) {
+      const g = this._windowSeg(win, floor);
+      const len = Math.hypot(g.s2.x - g.s1.x, g.s2.y - g.s1.y) || 1;
+      const dist = Math.abs((g.s2.y - g.s1.y) * sx - (g.s2.x - g.s1.x) * sy + g.s2.x * g.s1.y - g.s2.y * g.s1.x) / len;
+      const dot = ((sx - g.s1.x) * (g.s2.x - g.s1.x) + (sy - g.s1.y) * (g.s2.y - g.s1.y)) / (len * len);
+      if (dist < r && dot >= -0.1 && dot <= 1.1) return win;
+    }
+    return null;
+  }
   _doorEndpoints(door, floor) {
     // Returns screen-space segment + leaf geometry for a door (world meters)
     const rad = (parseFloat(door.rotation) || 0) * Math.PI / 180;
@@ -560,6 +591,29 @@ class SpatialHAPanel extends HTMLElement {
         ctx.beginPath(); ctx.arc(midx, midy, 12, 0, Math.PI * 2); ctx.stroke();
       }
     }
+    // Windows (origin = lower-left corner; cyan opening, no labels)
+    for (const win of (floor.windows || [])) {
+      const g = this._windowSeg(win, floor);
+      const isSel = this._selectedWindowId === win.id;
+      // Cut opening
+      ctx.strokeStyle = "#14161a"; ctx.lineWidth = 7;
+      ctx.beginPath(); ctx.moveTo(g.s1.x, g.s1.y); ctx.lineTo(g.s2.x, g.s2.y); ctx.stroke();
+      // Sill: double cyan lines
+      const len = Math.hypot(g.s2.x - g.s1.x, g.s2.y - g.s1.y) || 1;
+      const nx = -(g.s2.y - g.s1.y) / len, ny = (g.s2.x - g.s1.x) / len;
+      ctx.strokeStyle = isSel ? "#ff9800" : "#22d3ee"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(g.s1.x + nx * 3, g.s1.y + ny * 3); ctx.lineTo(g.s2.x + nx * 3, g.s2.y + ny * 3); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(g.s1.x - nx * 3, g.s1.y - ny * 3); ctx.lineTo(g.s2.x - nx * 3, g.s2.y - ny * 3); ctx.stroke();
+      // End ticks
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(g.s1.x - nx * 5, g.s1.y - ny * 5); ctx.lineTo(g.s1.x + nx * 5, g.s1.y + ny * 5); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(g.s2.x - nx * 5, g.s2.y - ny * 5); ctx.lineTo(g.s2.x + nx * 5, g.s2.y + ny * 5); ctx.stroke();
+      if (isSel) {
+        const midx = (g.s1.x + g.s2.x) / 2, midy = (g.s1.y + g.s2.y) / 2;
+        ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(midx, midy, 12, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
     for (const pt of (floor.points || [])) {
       const s = this._worldToScreen(pt.x, pt.y, floor);
       const isSelected = this._selectedPointId === pt.id;
@@ -659,6 +713,27 @@ class SpatialHAPanel extends HTMLElement {
         }
       }
     }
+    // Window placement mode: left-click places window origin (lower-left corner)
+    if (this._placingWindow && e.button !== 2) {
+      const w = this._screenToWorld(sx, sy, floor);
+      const cl = this._clampToFloor(floor, w.x, w.y);
+      const defs = this._windowDefaults();
+      this._fpPushUndo();
+      const nid = "window_" + Date.now();
+      floor.windows = floor.windows || [];
+      floor.windows.push({
+        id: nid, x: cl.x, y: cl.y, rotation: 0,
+        width: defs.width, height: defs.height, height_from_floor: defs.height_from_floor,
+      });
+      this._selectedWindowId = nid;
+      this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null;
+      this._placingWindow = false;
+      this._placingDoorType = null;
+      this._saveFloorplan();
+      this._render();
+      this._renderFloorplanCanvas();
+      return;
+    }
     // Door placement mode: left-click places a door of the pending type
     if (this._placingDoorType && e.button !== 2) {
       const w = this._screenToWorld(sx, sy, floor);
@@ -676,8 +751,9 @@ class SpatialHAPanel extends HTMLElement {
         swing: this._placingDoorType === "Double Door" ? "left" : (this._placingDoorType === "Garage Door" ? "up" : "right"),
       });
       this._selectedDoorId = nid;
-      this._selectedPointId = null; this._selectedWallId = null;
+      this._selectedPointId = null; this._selectedWallId = null; this._selectedWindowId = null;
       this._placingDoorType = null;
+      this._placingWindow = false;
       this._saveFloorplan();
       this._render();
       this._renderFloorplanCanvas();
@@ -696,6 +772,7 @@ class SpatialHAPanel extends HTMLElement {
           this._selectedPointId = pt.id;
           this._selectedWallId = null;
           this._selectedDoorId = null;
+          this._selectedWindowId = null;
           this._contextMenu = null;
           this._renderFloorplanCanvas();
           return;
@@ -707,7 +784,20 @@ class SpatialHAPanel extends HTMLElement {
       const hit = this._doorHitTest(sx, sy, floor, 10);
       if (hit) {
         this._selectedDoorId = hit.id;
-        this._selectedPointId = null; this._selectedWallId = null; this._contextMenu = null;
+        this._selectedPointId = null; this._selectedWallId = null; this._selectedWindowId = null; this._contextMenu = null;
+        this._placingDoorType = null; this._placingWindow = false;
+        this._render();
+        this._renderFloorplanCanvas();
+        return;
+      }
+    }
+    // Windows
+    {
+      const hit = this._windowHitTest(sx, sy, floor, 10);
+      if (hit) {
+        this._selectedWindowId = hit.id;
+        this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._contextMenu = null;
+        this._placingDoorType = null; this._placingWindow = false;
         this._render();
         this._renderFloorplanCanvas();
         return;
@@ -721,10 +811,12 @@ class SpatialHAPanel extends HTMLElement {
       const dist = Math.abs((s2.y - s1.y) * sx - (s2.x - s1.x) * sy + s2.x * s1.y - s2.y * s1.x) / len;
       const dot = ((sx - s1.x) * (s2.x - s1.x) + (sy - s1.y) * (s2.y - s1.y)) / (len * len);
       if (dist < 10 && dot >= 0 && dot <= 1) {
-        this._selectedWallId = wall.id; this._selectedPointId = null; this._selectedDoorId = null; this._contextMenu = null; this._renderFloorplanCanvas(); return;
+        this._selectedWallId = wall.id; this._selectedPointId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._contextMenu = null; this._renderFloorplanCanvas(); return;
       }
     }
-    this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._contextMenu = null; this._renderFloorplanCanvas();
+    this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._contextMenu = null;
+    if (this._placingDoorType || this._placingWindow) { this._placingDoorType = null; this._placingWindow = false; this._render(); }
+    this._renderFloorplanCanvas();
   }
   _fpPushUndo() {
     try {
@@ -745,6 +837,7 @@ class SpatialHAPanel extends HTMLElement {
       const f = this._getActiveFloor();
       if (f && !f.points.find((p) => p.id === this._selectedPointId)) this._selectedPointId = null;
       if (f && !(f.doors || []).find((d) => d.id === this._selectedDoorId)) this._selectedDoorId = null;
+      if (f && !(f.windows || []).find((w) => w.id === this._selectedWindowId)) this._selectedWindowId = null;
       this._saveFloorplan();
       this._render();
       this._renderFloorplanCanvas();
@@ -920,8 +1013,9 @@ class SpatialHAPanel extends HTMLElement {
   _handleFloorplanKeyDown(e) {
     const isFp = this._activeTab === "floorplan";
     if (!isFp) return;
-    if (e.key === "Escape" && this._placingDoorType) {
+    if (e.key === "Escape" && (this._placingDoorType || this._placingWindow)) {
       this._placingDoorType = null;
+      this._placingWindow = false;
       this._render(); this._renderFloorplanCanvas();
       return;
     }
@@ -939,8 +1033,11 @@ class SpatialHAPanel extends HTMLElement {
     if (mod && e.key.toLowerCase() === "c") {
       const floor = this._getActiveFloor();
       if (!floor) return;
-      // Copy selected point, wall, or door
-      if (this._selectedDoorId) {
+      // Copy selected point, wall, door, or window
+      if (this._selectedWindowId) {
+        const w = (floor.windows || []).find((ww) => ww.id === this._selectedWindowId);
+        if (w) { this._fpClipboard = { kind: "window", data: JSON.parse(JSON.stringify(w)) }; }
+      } else if (this._selectedDoorId) {
         const d = (floor.doors || []).find((dd) => dd.id === this._selectedDoorId);
         if (d) { this._fpClipboard = { kind: "door", data: JSON.parse(JSON.stringify(d)) }; }
       } else if (this._selectedPointId) {
@@ -982,6 +1079,13 @@ class SpatialHAPanel extends HTMLElement {
         floor.doors = floor.doors || [];
         floor.doors.push({ id: nid, type: src.type || "Door", x: cl.x, y: cl.y, rotation: parseFloat(src.rotation) || 0, width: parseFloat(src.width) || 0.9, swing: src.swing || "right" });
         this._selectedDoorId = nid;
+      } else if (this._fpClipboard.kind === "window") {
+        const src = this._fpClipboard.data;
+        const nid = "window_" + Date.now();
+        const cl = this._clampToFloor(floor, (parseFloat(src.x) || 0) + 0.5, (parseFloat(src.y) || 0) + 0.5);
+        floor.windows = floor.windows || [];
+        floor.windows.push({ id: nid, x: cl.x, y: cl.y, rotation: parseFloat(src.rotation) || 0, width: parseFloat(src.width) || 1.2, height: parseFloat(src.height) || 1.2, height_from_floor: parseFloat(src.height_from_floor) || 0.9 });
+        this._selectedWindowId = nid;
       }
       this._saveFloorplan();
       this._render();
@@ -991,7 +1095,12 @@ class SpatialHAPanel extends HTMLElement {
     if ((e.key === "Delete" || e.key === "Backspace") && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement ? document.activeElement.tagName : "")) {
       const floor = this._getActiveFloor();
       if (!floor) return;
-      if (this._selectedDoorId) {
+      if (this._selectedWindowId) {
+        this._fpPushUndo();
+        floor.windows = (floor.windows || []).filter((w) => w.id !== this._selectedWindowId);
+        this._selectedWindowId = null;
+        this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+      } else if (this._selectedDoorId) {
         this._fpPushUndo();
         floor.doors = (floor.doors || []).filter((d) => d.id !== this._selectedDoorId);
         this._selectedDoorId = null;
@@ -1090,6 +1199,16 @@ class SpatialHAPanel extends HTMLElement {
         ctx.strokeStyle = "#fbbf24"; ctx.lineWidth = 2.5;
         ctx.beginPath(); ctx.moveTo(q1.x, q1.y); ctx.lineTo(q2.x, q2.y); ctx.stroke();
       }
+      // Windows (cyan, origin = lower-left corner)
+      for (const win of (floor.windows || [])) {
+        const rad = (parseFloat(win.rotation) || 0) * Math.PI / 180;
+        const w = parseFloat(win.width) || 1.2;
+        const dx = Math.cos(rad), dy = Math.sin(rad);
+        const x = parseFloat(win.x) || 0, y = parseFloat(win.y) || 0;
+        const q1 = proj(x, y), q2 = proj(x + dx * w, y + dy * w);
+        ctx.strokeStyle = "#22d3ee"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(q1.x, q1.y); ctx.lineTo(q2.x, q2.y); ctx.stroke();
+      }
       // Points (no labels)
       for (const pt of (floor.points || [])) {
         const q = proj(pt.x, pt.y);
@@ -1139,7 +1258,28 @@ class SpatialHAPanel extends HTMLElement {
         <button id="door-save">Save Door</button>
       </div>` : (this._placingDoorType ? `<p><em>Placing ${this._esc(this._placingDoorType)} - click on canvas to place (Esc to cancel).</em> <button id="door-cancel-place">Cancel</button></p>` : "");
     const dd = this._doorDefaults();
-    const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected point at (${this._formatMetersForInput(pt.x)}, ${this._formatMetersForInput(pt.y)}) - double-click to edit` : ""; })() : (this._selectedDoorId ? `Door selected - edit below` : (this._selectedWallId ? `Wall selected` : "Left-click selects, double-click point to edit position, right-click point for 4 arrows")); const doorDefaultsHtml = `
+    const windowsHtml = (((floor.windows || []).map((wn) => `<tr><td>${this._esc(this._formatMetersForInput(wn.width || 1.2))} × ${this._esc(this._formatMetersForInput(wn.height || 1.2))}</td><td>${this._esc(this._formatMetersForInput(wn.height_from_floor || 0.9))}</td><td>${this._esc(String(Math.round(parseFloat(wn.rotation) || 0)))}°</td><td><button data-del-window="${this._esc(wn.id)}">Delete</button></td></tr>`).join("")) || `<tr><td colspan="4"><em>No windows - click Add Window then click canvas (origin = lower-left corner)</em></td></tr>`);
+    const selWin = this._selectedWindowId ? (floor.windows || []).find((w) => w.id === this._selectedWindowId) : null;
+    const windowEditHtml = selWin ? `
+      <div style="border:1px solid #22d3ee; padding:10px; border-radius:6px; margin-top:8px;">
+        <h4>Selected Window (origin = lower-left corner)</h4>
+        <label>X: <input id="window-x" type="text" value="${this._esc(this._formatMetersForInput(selWin.x || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <label>Y: <input id="window-y" type="text" value="${this._esc(this._formatMetersForInput(selWin.y || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <label>Width: <input id="window-width" type="text" value="${this._esc(this._formatMetersForInput(selWin.width || 1.2))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <label>Height: <input id="window-height" type="text" value="${this._esc(this._formatMetersForInput(selWin.height || 1.2))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <label>Height from floor: <input id="window-sill" type="text" value="${this._esc(this._formatMetersForInput(selWin.height_from_floor || 0.9))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <label>Rotation (deg): <input id="window-rot" type="number" step="5" value="${Math.round(parseFloat(selWin.rotation) || 0)}" style="width:80px"></label>
+        <button id="window-rot-left" title="Rotate -15°">⟲</button><button id="window-rot-right" title="Rotate +15°">⟳</button><br>
+        <button id="window-save">Save Window</button>
+      </div>` : (this._placingWindow ? `<p><em>Placing window - click on canvas for lower-left corner origin (Esc to cancel).</em> <button id="window-cancel-place">Cancel</button></p>` : "");
+    const wd2 = this._windowDefaults();
+    const windowDefaultsHtml = `
+      <div style="border:1px solid #eee; padding:10px; border-radius:6px; margin-top:12px;"><h4>Default Window (used for new windows)</h4>
+      <label>Width: <input id="def-win-w" type="text" value="${this._esc(this._formatMetersForInput(wd2.width))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+      <label>Height: <input id="def-win-h" type="text" value="${this._esc(this._formatMetersForInput(wd2.height))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+      <label>Height from floor: <input id="def-win-sill" type="text" value="${this._esc(this._formatMetersForInput(wd2.height_from_floor))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+      <button id="window-defs-save">Save Defaults</button></div>`;
+    const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected point at (${this._formatMetersForInput(pt.x)}, ${this._formatMetersForInput(pt.y)}) - double-click to edit` : ""; })() : (this._selectedWindowId ? `Window selected - edit below` : (this._selectedDoorId ? `Door selected - edit below` : (this._selectedWallId ? `Wall selected` : "Left-click selects, double-click point to edit position, right-click point for 4 arrows"))); const doorDefaultsHtml = `
       <div style="border:1px solid #eee; padding:10px; border-radius:6px; margin-top:12px;"><h4>Default Door Sizes (used for new doors)</h4>
       <label>Door: <input id="def-door" type="text" value="${this._esc(this._formatMetersForInput(dd["Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
       <label>Double Door: <input id="def-double" type="text" value="${this._esc(this._formatMetersForInput(dd["Double Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
@@ -1170,6 +1310,13 @@ class SpatialHAPanel extends HTMLElement {
           <table><thead><tr><th>Type</th><th>Size</th><th>Rotation</th><th>Swing</th><th>Action</th></tr></thead><tbody>${doorsHtml}</tbody></table>
           ${doorEditHtml}
           ${doorDefaultsHtml}
+        </div>
+        <div style="margin-top:12px; border:1px solid #eee; padding:10px; border-radius:6px;">
+          <h3>Windows</h3>
+          <p><button id="window-add">Add Window</button> <small>origin = lower-left corner, then edit size/height/sill/rotation</small></p>
+          <table><thead><tr><th>Size (W × H)</th><th>Sill Height</th><th>Rotation</th><th>Action</th></tr></thead><tbody>${windowsHtml}</tbody></table>
+          ${windowEditHtml}
+          ${windowDefaultsHtml}
         </div>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px;">
           <div><h3>Walls</h3><p><button id="wall-add">Add Wall (selected + last)</button> <small>or right-drag point to point</small></p><table><thead><tr><th>Length</th><th>Action</th></tr></thead><tbody>${wallsHtml}</tbody></table></div>
@@ -1987,6 +2134,67 @@ class SpatialHAPanel extends HTMLElement {
       if (d1) { const v = this._parseDisplayToMeters(d1.value); if (!isNaN(v) && v >= 0.2) this._floorplan.door_defaults["Door"] = v; }
       if (d2) { const v = this._parseDisplayToMeters(d2.value); if (!isNaN(v) && v >= 0.2) this._floorplan.door_defaults["Double Door"] = v; }
       if (d3) { const v = this._parseDisplayToMeters(d3.value); if (!isNaN(v) && v >= 0.2) this._floorplan.door_defaults["Garage Door"] = v; }
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    const winAdd = this.shadowRoot.getElementById("window-add");
+    if (winAdd) winAdd.addEventListener("click", () => {
+      if (this._placingWindow) this._placingWindow = false;
+      else { this._placingWindow = true; this._placingDoorType = null; this._selectedWindowId = null; }
+      this._render(); this._renderFloorplanCanvas();
+    });
+    const winCancel = this.shadowRoot.getElementById("window-cancel-place");
+    if (winCancel) winCancel.addEventListener("click", () => { this._placingWindow = false; this._render(); this._renderFloorplanCanvas(); });
+    this.shadowRoot.querySelectorAll("[data-del-window]").forEach((b) => b.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      this._fpPushUndo();
+      f.windows = (f.windows || []).filter((w) => w.id !== b.getAttribute("data-del-window"));
+      if (this._selectedWindowId === b.getAttribute("data-del-window")) this._selectedWindowId = null;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    }));
+    const winSave = this.shadowRoot.getElementById("window-save");
+    if (winSave) winSave.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      const wn = (f.windows || []).find((ww) => ww.id === this._selectedWindowId);
+      if (!wn) return;
+      this._fpPushUndo();
+      const wx = this.shadowRoot.getElementById("window-x"), wy = this.shadowRoot.getElementById("window-y");
+      const ww = this.shadowRoot.getElementById("window-width"), wh = this.shadowRoot.getElementById("window-height");
+      const ws = this.shadowRoot.getElementById("window-sill"), wr = this.shadowRoot.getElementById("window-rot");
+      if (wx) { const v = this._parseDisplayToMeters(wx.value); if (!isNaN(v)) { const cl = this._clampToFloor(f, v, wn.y); wn.x = cl.x; } }
+      if (wy) { const v = this._parseDisplayToMeters(wy.value); if (!isNaN(v)) { const cl = this._clampToFloor(f, wn.x, v); wn.y = cl.y; } }
+      if (ww) { const v = this._parseDisplayToMeters(ww.value); if (!isNaN(v) && v >= 0.2) wn.width = v; }
+      if (wh) { const v = this._parseDisplayToMeters(wh.value); if (!isNaN(v) && v >= 0.2) wn.height = v; }
+      if (ws) { const v = this._parseDisplayToMeters(ws.value); if (!isNaN(v) && v >= 0) wn.height_from_floor = v; }
+      if (wr) { const v = parseFloat(wr.value); if (!isNaN(v)) wn.rotation = ((v % 360) + 360) % 360; }
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    const winRotL = this.shadowRoot.getElementById("window-rot-left");
+    if (winRotL) winRotL.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      const wn = (f.windows || []).find((ww) => ww.id === this._selectedWindowId);
+      if (!wn) return;
+      this._fpPushUndo();
+      wn.rotation = (((parseFloat(wn.rotation) || 0) - 15) % 360 + 360) % 360;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    const winRotR = this.shadowRoot.getElementById("window-rot-right");
+    if (winRotR) winRotR.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      const wn = (f.windows || []).find((ww) => ww.id === this._selectedWindowId);
+      if (!wn) return;
+      this._fpPushUndo();
+      wn.rotation = (((parseFloat(wn.rotation) || 0) + 15) % 360 + 360) % 360;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    const winDefsSave = this.shadowRoot.getElementById("window-defs-save");
+    if (winDefsSave) winDefsSave.addEventListener("click", () => {
+      if (!this._floorplan) return;
+      this._fpPushUndo();
+      this._floorplan.window_defaults = this._floorplan.window_defaults || {};
+      const w1 = this.shadowRoot.getElementById("def-win-w"), w2 = this.shadowRoot.getElementById("def-win-h"), w3 = this.shadowRoot.getElementById("def-win-sill");
+      if (w1) { const v = this._parseDisplayToMeters(w1.value); if (!isNaN(v) && v >= 0.2) this._floorplan.window_defaults.width = v; }
+      if (w2) { const v = this._parseDisplayToMeters(w2.value); if (!isNaN(v) && v >= 0.2) this._floorplan.window_defaults.height = v; }
+      if (w3) { const v = this._parseDisplayToMeters(w3.value); if (!isNaN(v) && v >= 0) this._floorplan.window_defaults.height_from_floor = v; }
       this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
     });
     const alignSave = this.shadowRoot.getElementById("align-save");
