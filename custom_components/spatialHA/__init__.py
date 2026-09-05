@@ -13,7 +13,7 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .ble import _get_ble_data
 from .const import DOMAIN, LOGGER
-from .positioning import estimate_positions, rssi_to_distance, trilaterate
+from .positioning import estimate_positions, floor_bases, rssi_to_distance, solve_3d, trilaterate
 from .floorplan import (
     DEFAULT_DOOR_DEFAULTS,
     DEFAULT_WINDOW,
@@ -74,7 +74,9 @@ __all__ = [
     "_default_floorplan",
     "_get_ble_data",
     "estimate_positions",
+    "floor_bases",
     "rssi_to_distance",
+    "solve_3d",
     "trilaterate",
     "_get_version",
     "async_setup",

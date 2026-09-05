@@ -224,13 +224,14 @@ export const Home3DMixin = {
         lines.push({ a: [rx.x, rx.y, z0 + 0.25], b: [rx.x, rx.y, z0 + 0.9], stroke: rxFill, width: 3 });
         dots.push({ p: [rx.x, rx.y, z0 + 0.9], fill: rxFill });
       }
-      // Estimated device positions (rough triangulation)
+      // Estimated device positions (rough triangulation, cross-floor in 3D)
       if (typeof this === "undefined" || this._showPositions !== false) {
         const allPos = (typeof this !== "undefined" && this._bleData && this._bleData.positions) || [];
         for (const pos of allPos) {
           if (pos.floor_id !== floor.id) continue;
-          lines.push({ a: [pos.x, pos.y, z0 + 0.25], b: [pos.x, pos.y, z0 + 0.6], stroke: "#f59e0b", width: 2 });
-          dots.push({ p: [pos.x, pos.y, z0 + 0.6], fill: "#f59e0b" });
+          const pz = (typeof pos.z === "number" && isFinite(pos.z)) ? pos.z : z0 + 0.6;
+          lines.push({ a: [pos.x, pos.y, z0 + 0.25], b: [pos.x, pos.y, pz], stroke: "#f59e0b", width: 2 });
+          dots.push({ p: [pos.x, pos.y, pz], fill: "#f59e0b" });
         }
       }
       // Bluetooth scanners as purple posts (placement only for now)

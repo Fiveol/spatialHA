@@ -430,7 +430,7 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
 
         devices = list(devices_map.values())
 
-        # Rough trilateration from placed floor scanners (needs 3+ per floor)
+        # Rough 3D trilateration from placed scanners across floors (needs 2+)
         positions: list[dict] = []
         try:
             from .positioning import estimate_positions
