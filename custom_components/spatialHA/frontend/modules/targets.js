@@ -169,7 +169,7 @@ export const TargetsMixin = {
     },
 
     _renderTargets() {
-      if (this._targetsLoading) return `<p class="loading">Loading targetsâ€¦</p>`;
+      if (this._targetsLoading) return `<p class="loading">Loading targets…</p>`;
       if (this._targetsError) return `<p class="error">Error: ${this._esc(this._targetsError)}</p><p><button id="targets-retry">Retry</button></p>`;
 
       let listHtml = "";

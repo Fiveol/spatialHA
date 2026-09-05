@@ -84,10 +84,10 @@ export const BleMixin = {
     },
 
     _renderBleDeviceView() {
-      if (this._bleLoading) return `<p class="loading">Loading BLE devices via WebSocketâ€¦ (auto-refresh every Update Interval)</p>`;
+      if (this._bleLoading) return `<p class="loading">Loading BLE devices via WebSocket… (auto-refresh every Update Interval)</p>`;
       if (this._bleError) return `<p class="error">Error: ${this._bleError}</p><p><button id="ble-retry">Retry</button></p>`;
       if (!this._bleData || !this._bleData.devices || this._bleData.devices.length === 0) {
-        return `<p>No BLE devices found. Auto-refreshingâ€¦</p><p><button id="ble-retry">Refresh</button></p>`;
+        return `<p>No BLE devices found. Auto-refreshing…</p><p><button id="ble-retry">Refresh</button></p>`;
       }
       const scanners = this._bleData.scanners || [];
       const _fq2 = (this._bleFilter || "").trim().toLowerCase();
@@ -114,7 +114,7 @@ export const BleMixin = {
       let rows = devices.map(dev => {
         let cols = `<td><code>${this._esc(dev.address)}</code></td><td>${this._esc(dev.name)}</td>`;
         if (hasIbeacon) {
-          const ib = dev.ibeacon ? `${this._esc(dev.ibeacon.uuid)}<br><small>${dev.ibeacon.major}/${dev.ibeacon.minor}</small>` : "â€”";
+          const ib = dev.ibeacon ? `${this._esc(dev.ibeacon.uuid)}<br><small>${dev.ibeacon.major}/${dev.ibeacon.minor}</small>` : "—";
           cols += `<td>${ib}</td>`;
         }
         const per = dev.per_scanner || {};

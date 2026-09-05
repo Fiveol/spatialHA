@@ -4,7 +4,7 @@
  * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
 if (!customElements.get("spatialHA-panel")) {
-const SPATIALHA_MOD_VERSION = "0.9.1.3";
+const SPATIALHA_MOD_VERSION = "0.9.1.4";
 function spatialHAModUrl(name) {
   return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
 }
@@ -325,14 +325,14 @@ class SpatialHAPanel extends HTMLElement {
     }
 
     let settingsInner = "";
-    if (this._settingsLoading) settingsInner = `<p class="loading">Loading settingsâ€¦</p>`;
+    if (this._settingsLoading) settingsInner = `<p class="loading">Loading settings…</p>`;
     else if (this._settingsError) settingsInner = `<p class="error">Error: ${this._esc(this._settingsError)}</p><p><button id="settings-retry">Retry</button></p>`;
     else if (this._settings) {
       settingsInner = `
         <div class="field">
           <label for="interval-input">Update Interval (seconds, default 1)</label>
           <input id="interval-input" type="number" min="0.5" max="3600" step="0.5" value="${this._esc(this._pendingInterval)}" />
-          <button id="settings-save" ${this._settingsSaving ? "disabled" : ""}>${this._settingsSaving ? "Savingâ€¦" : "Save"}</button>
+          <button id="settings-save" ${this._settingsSaving ? "disabled" : ""}>${this._settingsSaving ? "Saving…" : "Save"}</button>
         </div>
         <p><small>Applies to background updates.</small></p>
       `;

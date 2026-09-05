@@ -54,7 +54,7 @@ export const GpsMixin = {
     },
 
     _renderGps() {
-    if (this._gpsLoading) return `<p class="loading">Loading GPS entitiesï¿½</p>`;
+    if (this._gpsLoading) return `<p class="loading">Loading GPS entities…</p>`;
     if (this._gpsError) return `<p class="error">Error: ${this._esc(this._gpsError)}</p><p><button id="gps-retry">Retry</button></p>`;
     if (!this._gpsData || !this._gpsData.entities || this._gpsData.entities.length === 0) {
       return `<p>No Device Tracker entities found.</p><p><button id="gps-retry">Refresh</button></p>`;

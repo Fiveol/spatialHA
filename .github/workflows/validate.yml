@@ -37,3 +37,42 @@ jobs:
           # Remove this 'ignore' key when you have added brand images for your integration
           # https://developers.home-assistant.io/docs/creating_integration_file_structure#local-brand-images-for-custom-integrations
           ignore: brands
+
+  encoding: # guard against mojibake (e.g. em dashes showing as garbage)
+    name: Encoding check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Fail on mojibake or C1 controls
+        run: |
+          python3 - <<'EOF'
+          import pathlib
+          import sys
+          bad = []
+          for p in list(pathlib.Path('custom_components').rglob('*.py')) + list(pathlib.Path('custom_components').rglob('*.js')):
+              if '__pycache__' in str(p):
+                  continue
+              try:
+                  text = p.read_text(encoding='utf-8')
+              except UnicodeDecodeError:
+                  bad.append(f'{p}: not valid UTF-8')
+                  continue
+              for i, ch in enumerate(text):
+                  # C1 controls must never appear; lone U+FFFD means mangled text
+                  if '\u0080' <= ch <= '\u009f' or ch == '\ufffd':
+                      bad.append(f'{p}:{i + 1}: U+{ord(ch):04X}')
+                      break
+              # Windows-1252 double-encoding residue (mojibake)
+              for seq in ('\u00e2\u20ac\u00a6', '\u00e2\u20ac\u201d', '\u00e2\u20ac\u201c', '\u00ef\u00bf\u00bd'):
+                  if seq in text:
+                      bad.append(f'{p}: mojibake {seq!r}')
+                      break
+          if bad:
+              print('\n'.join(bad))
+              sys.exit(1)
+          print('encoding OK')
+          EOF
