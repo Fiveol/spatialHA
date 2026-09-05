@@ -24,6 +24,7 @@ STORAGE_KEY_SETTINGS = "spatialHA/settings"
 STORAGE_KEY_BLE_DATA = "spatialHA/ble_data"
 STORAGE_KEY_BLE_SIGHTINGS = "spatialHA/sightings"
 STORAGE_KEY_TARGETS = "spatialHA/targets"
+STORAGE_KEY_FLOORPLAN = "spatialHA/floorplan"
 STORAGE_VERSION = 1
 DEFAULT_UPDATE_INTERVAL = 1.0
 
@@ -33,6 +34,7 @@ LEGACY_STORAGE_KEYS = {
     "spatialHA/ble_data": "spatialHA.ble_data",
     "spatialHA/sightings": "spatialHA.sightings",
     "spatialHA/targets": "spatialHA.targets",
+    "spatialHA/floorplan": "spatialHA.floorplan",
 }
 
 
@@ -213,6 +215,80 @@ async def _async_save_targets(hass: HomeAssistant, targets: list[dict]) -> None:
         await _async_update_target_trackers(hass)
     except Exception as err:  # noqa: BLE001
         LOGGER.debug("Failed to update target trackers after save: %s", err)
+
+
+def _get_floorplan_store(hass: HomeAssistant) -> Store:
+    """Get Store for spatialHA/floorplan."""
+    return Store(hass, STORAGE_VERSION, STORAGE_KEY_FLOORPLAN)
+
+
+def _default_floorplan() -> dict:
+    """Return default floorplan with one floor and one point at 0,0 (meters internally)."""
+    return {
+        "units": "meters",  # display units, internal is meters
+        "active_floor_id": "floor_1",
+        "floors": [
+            {
+                "id": "floor_1",
+                "name": "Floor 1",
+                "level": 0,
+                "offset_x": 0.0,
+                "offset_y": 0.0,
+                "scale": 1.0,
+                "rotation": 0.0,
+                "points": [{"id": "point_1", "x": 0.0, "y": 0.0, "label": "Origin"}],
+                "walls": [],
+                "rooms": [],
+            }
+        ],
+    }
+
+
+async def _async_load_floorplan(hass: HomeAssistant) -> dict:
+    """Load floorplan from .storage/spatialHA/floorplan (migrates)."""
+    data = await _async_load_with_migration(hass, STORAGE_KEY_FLOORPLAN)
+    if not isinstance(data, dict) or "floors" not in data:
+        # Check if old flat structure
+        if isinstance(data, dict) and "points" in data:
+            return _default_floorplan()
+        return _default_floorplan()
+    # Ensure defaults
+    if "units" not in data:
+        data["units"] = "meters"
+    if "active_floor_id" not in data or not any(f["id"] == data["active_floor_id"] for f in data.get("floors", [])):
+        data["active_floor_id"] = data["floors"][0]["id"] if data.get("floors") else "floor_1"
+    # Ensure each floor has required fields
+    for floor in data.get("floors", []):
+        floor.setdefault("offset_x", 0.0)
+        floor.setdefault("offset_y", 0.0)
+        floor.setdefault("scale", 1.0)
+        floor.setdefault("rotation", 0.0)
+        floor.setdefault("points", [])
+        floor.setdefault("walls", [])
+        floor.setdefault("rooms", [])
+        if not floor["points"]:
+            floor["points"] = [{"id": "point_1", "x": 0.0, "y": 0.0, "label": "Origin"}]
+    return data
+
+
+async def _async_save_floorplan(hass: HomeAssistant, floorplan: dict) -> None:
+    """Save floorplan to .storage/spatialHA/floorplan."""
+    store = _get_floorplan_store(hass)
+    await store.async_save(floorplan)
+    hass.data.setdefault(DOMAIN, {})["floorplan"] = floorplan
+    # Push to subscribers
+    subs = hass.data.get(DOMAIN, {}).get("floorplan_subscribers", set())
+    if subs:
+        try:
+            from homeassistant.components import websocket_api as ws_api
+
+            for conn, msg_id in list(subs):
+                try:
+                    conn.send_message(ws_api.event_message(msg_id, {"type": "floorplan_update", "floorplan": floorplan}))
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 def _compute_target_state(target: dict, ble_data: dict | None, hass: HomeAssistant | None = None) -> str:
@@ -465,10 +541,11 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     except Exception as err:  # noqa: BLE001
         LOGGER.debug("Could not register WebSocket in async_setup: %s", err)
 
-    # Prepare data holders and load persisted settings/ble data/targets
+    # Prepare data holders and load persisted settings/ble data/targets/floorplan
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN].setdefault("ble_subscribers", set())
     hass.data[DOMAIN].setdefault("target_subscribers", set())
+    hass.data[DOMAIN].setdefault("floorplan_subscribers", set())
     hass.data[DOMAIN].setdefault("trackers", {})
     try:
         settings = await _async_load_settings(hass)
@@ -479,6 +556,12 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
             hass.data[DOMAIN]["targets"] = targets
         except Exception:  # noqa: BLE001
             hass.data[DOMAIN]["targets"] = []
+        # Load floorplan
+        try:
+            floorplan = await _async_load_floorplan(hass)
+            hass.data[DOMAIN]["floorplan"] = floorplan
+        except Exception:  # noqa: BLE001
+            hass.data[DOMAIN]["floorplan"] = _default_floorplan()
         # Load cached BLE data if exists
         try:
             ble_store = _get_ble_data_store(hass)
@@ -491,6 +574,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         LOGGER.debug("Failed to load settings: %s", err)
         hass.data[DOMAIN]["settings"] = {"update_interval": DEFAULT_UPDATE_INTERVAL}
         hass.data[DOMAIN]["targets"] = []
+        hass.data[DOMAIN]["floorplan"] = _default_floorplan()
 
     return True
 

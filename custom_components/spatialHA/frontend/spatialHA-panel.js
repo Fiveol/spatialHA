@@ -3,6 +3,7 @@
  * Frontend NEVER queries directly. All data goes via backend WebSocket
  * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
+if (!customElements.get("spatialHA-panel")) {
 class SpatialHAPanel extends HTMLElement {
   constructor() {
     super();
@@ -252,7 +253,7 @@ class SpatialHAPanel extends HTMLElement {
   }
 
   _renderGps() {
-    if (this._gpsLoading) return `<p class="loading">Loading GPS entities…</p>`;
+    if (this._gpsLoading) return `<p class="loading">Loading GPS entitiesï¿½</p>`;
     if (this._gpsError) return `<p class="error">Error: ${this._esc(this._gpsError)}</p><p><button id="gps-retry">Retry</button></p>`;
     if (!this._gpsData || !this._gpsData.entities || this._gpsData.entities.length === 0) {
       return `<p>No Device Tracker entities found. Ensure GPS trackers are configured.</p><p><button id="gps-retry">Refresh</button></p>`;
@@ -627,6 +628,14 @@ class SpatialHAPanel extends HTMLElement {
   }
 
   _render() {
+    // Preserve focus/selection to fix deselection on auto-refresh
+    const active = this.shadowRoot ? this.shadowRoot.activeElement : null;
+    const activeId = active ? active.id : null;
+    const activeTag = active ? active.tagName : null;
+    const activeValue = active && (active.tagName === "INPUT" || active.tagName === "SELECT" || active.tagName === "TEXTAREA") ? active.value : null;
+    const selStart = active && typeof active.selectionStart === "number" ? active.selectionStart : null;
+    const selEnd = active && typeof active.selectionEnd === "number" ? active.selectionEnd : null;
+
     const style = `
       :host { display: block; font-family: var(--paper-font-body1_-_font-family, sans-serif); }
       .container { padding: 16px; max-width: 1100px; margin: 0 auto; }
@@ -874,10 +883,33 @@ class SpatialHAPanel extends HTMLElement {
     if (gpsRetry) gpsRetry.addEventListener("click", () => { if (this._gpsUnsub) { try { this._gpsUnsub(); } catch(e){} this._gpsUnsub=null; } this._gpsData=null; this._ensureGpsSubscription(); });
     const gpsRefresh = this.shadowRoot.getElementById("gps-refresh");
     if (gpsRefresh) gpsRefresh.addEventListener("click", () => { this._fetchGpsOnce(); });
+
+    // Restore focus/selection (fix deselection on auto-refresh)
+    if (activeId) {
+      const el = this.shadowRoot.getElementById(activeId);
+      if (el && (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA")) {
+        try {
+          el.focus();
+          if (activeValue !== null && el.value !== activeValue) el.value = activeValue;
+          if (selStart !== null && typeof el.setSelectionRange === "function") {
+            try { el.setSelectionRange(selStart, selEnd); } catch(e){}
+          }
+        } catch(e){}
+      }
+    } else if (active && activeTag === "INPUT" && activeValue !== null) {
+      // Fallback for inputs without id (should not happen, but try)
+      const inputs = this.shadowRoot.querySelectorAll("input");
+      for (const inp of inputs) {
+        if (inp.placeholder === active.getAttribute("placeholder") || inp.value === activeValue) {
+          try { inp.focus(); if (selStart !== null) inp.setSelectionRange(selStart, selEnd); } catch(e){}
+          break;
+        }
+      }
+    }
   }
 
   _renderGps() {
-    if (this._gpsLoading) return `<p class="loading">Loading GPS entities…</p>`;
+    if (this._gpsLoading) return `<p class="loading">Loading GPS entitiesï¿½</p>`;
     if (this._gpsError) return `<p class="error">Error: ${this._esc(this._gpsError)}</p><p><button id="gps-retry">Retry</button></p>`;
     if (!this._gpsData || !this._gpsData.entities || this._gpsData.entities.length===0) return `<p>No Device Tracker entities found.</p><p><button id="gps-retry">Refresh</button></p>`;
     const entities = this._gpsData.entities;
@@ -896,3 +928,4 @@ class SpatialHAPanel extends HTMLElement {
 if (!customElements.get("spatialHA-panel")) {
   customElements.define("spatialHA-panel", SpatialHAPanel);
 }
+} // close outer guard if (!customElements.get("spatialHA-panel"))
