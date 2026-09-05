@@ -1,10 +1,12 @@
 export const Home3DMixin = {
   _homeViews() {
+    // Yaw convention: plan +x right, +y down (matches 2D editor); house front is the y=max edge.
+    // Screen X is mirrored so plan top-left stays top-left.
     return [
-      { id: "iso", label: "Isometric", yaw: 45, pitch: 35.264 },
-      { id: "top", label: "Top Down", yaw: 0, pitch: 89.9 },
-      { id: "front", label: "Front", yaw: 0, pitch: 8 },
-      { id: "back", label: "Back", yaw: 180, pitch: 8 },
+      { id: "iso", label: "Isometric", yaw: 225, pitch: 35.264 },
+      { id: "top", label: "Top Down", yaw: 180, pitch: 89.9 },
+      { id: "front", label: "Front", yaw: 180, pitch: 8 },
+      { id: "back", label: "Back", yaw: 0, pitch: 8 },
       { id: "left", label: "Left Side", yaw: 90, pitch: 8 },
       { id: "right", label: "Right Side", yaw: -90, pitch: 8 },
     ];
