@@ -39,6 +39,22 @@ class SpatialHAPanel extends HTMLElement {
     this._gpsLoading = false;
     this._gpsError = null;
     this._gpsUnsub = null;
+    // Floorplan state
+    this._floorplan = null;
+    this._floorplanLoading = false;
+    this._floorplanError = null;
+    this._floorplanUnsub = null;
+    this._floorplanUnits = "meters";
+    this._selectedFloorId = null;
+    this._selectedPointId = null;
+    this._selectedWallId = null;
+    this._selectedRoomId = null;
+    this._contextMenu = null; // {x,y,pointId}
+    this._dragging = null;
+    this._floorplanScale = 40; // px per meter
+    this._floorplanOffset = {x: 400, y: 300};
+    this._floorplanPanning = false;
+    this._floorplanPanStart = null;
   }
 
   set hass(hass) {
@@ -50,12 +66,14 @@ class SpatialHAPanel extends HTMLElement {
       if (this._activeTab === "ble") this._ensureBleSubscription();
       if (this._activeTab === "targets") this._ensureTargetsSubscription();
       if (this._activeTab === "gps") this._ensureGpsSubscription();
+      if (this._activeTab === "floorplan") this._ensureFloorplanSubscription();
     } else {
       if (this._activeTab === "about" && !this._hasFetchedVersion && !this._loadingVersion) this._fetchVersion();
       if (this._activeTab === "ble" && !this._bleUnsub) this._ensureBleSubscription();
       if (this._activeTab === "settings" && !this._settings && !this._settingsLoading) this._fetchSettings();
       if (this._activeTab === "targets" && !this._targetsUnsub) this._ensureTargetsSubscription();
       if (this._activeTab === "gps" && !this._gpsUnsub) this._ensureGpsSubscription();
+      if (this._activeTab === "floorplan" && !this._floorplanUnsub) this._ensureFloorplanSubscription();
     }
   }
 
@@ -67,6 +85,7 @@ class SpatialHAPanel extends HTMLElement {
     if (this._bleUnsub) { try { this._bleUnsub(); } catch(e){} this._bleUnsub = null; }
     if (this._targetsUnsub) { try { this._targetsUnsub(); } catch(e){} this._targetsUnsub = null; }
     if (this._gpsUnsub) { try { this._gpsUnsub(); } catch(e){} this._gpsUnsub = null; }
+    if (this._floorplanUnsub) { try { this._floorplanUnsub(); } catch(e){} this._floorplanUnsub = null; }
   }
 
   _switchTab(tab) {
@@ -78,6 +97,7 @@ class SpatialHAPanel extends HTMLElement {
     if (tab === "ble" && this._hass) this._ensureBleSubscription();
     if (tab === "targets" && this._hass) this._ensureTargetsSubscription();
     if (tab === "gps" && this._hass) this._ensureGpsSubscription();
+    if (tab === "floorplan" && this._hass) this._ensureFloorplanSubscription();
   }
 
   _switchBleSubTab(sub) {
@@ -757,6 +777,7 @@ class SpatialHAPanel extends HTMLElement {
     let mainInner = "";
     if (this._activeTab === "home") mainInner = homeContent;
     else if (this._activeTab === "ble") mainInner = bleContent;
+    else if (this._activeTab === "floorplan") mainInner = this._renderFloorplan();
     else if (this._activeTab === "gps") mainInner = this._renderGps();
     else if (this._activeTab === "targets") mainInner = targetsContent;
     else if (this._activeTab === "settings") mainInner = settingsContent;
@@ -768,6 +789,7 @@ class SpatialHAPanel extends HTMLElement {
         <div class="tabs" role="tablist">
           <button role="tab" aria-selected="${this._activeTab === "home"}" data-tab="home" class="${this._activeTab === "home" ? "active" : ""}">Home</button>
           <button role="tab" aria-selected="${this._activeTab === "ble"}" data-tab="ble" class="${this._activeTab === "ble" ? "active" : ""}">BLE</button>
+          <button role="tab" aria-selected="${this._activeTab === "floorplan"}" data-tab="floorplan" class="${this._activeTab === "floorplan" ? "active" : ""}">Floor Plan</button>
           <button role="tab" aria-selected="${this._activeTab === "gps"}" data-tab="gps" class="${this._activeTab === "gps" ? "active" : ""}">GPS</button>
           <button role="tab" aria-selected="${this._activeTab === "targets"}" data-tab="targets" class="${this._activeTab === "targets" ? "active" : ""}">Targets</button>
           <button role="tab" aria-selected="${this._activeTab === "settings"}" data-tab="settings" class="${this._activeTab === "settings" ? "active" : ""}">Settings</button>
