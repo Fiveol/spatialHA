@@ -4,19 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.device_tracker import SourceType
-from homeassistant.components.device_tracker.config_entry import TrackerEntity
+from homeassistant.components.device_tracker import SourceType, TrackerEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, LOGGER
-
-try:
-    from homeassistant.components.device_tracker import TrackerEntity as _TrackerEntity  # type: ignore[attr-defined]
-except ImportError:
-    _TrackerEntity = TrackerEntity  # type: ignore[assignment]
 
 
 async def async_setup_entry(
@@ -113,11 +107,6 @@ class SpatialHATargetTracker(TrackerEntity):
     @property
     def state(self) -> str | None:
         """Return state."""
-        return self._state
-
-    @property
-    def location_name(self) -> str | None:
-        """Return location name."""
         return self._state
 
     @property
