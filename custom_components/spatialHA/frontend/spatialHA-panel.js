@@ -272,8 +272,306 @@ class SpatialHAPanel extends HTMLElement {
     }
   }
 
-  _renderGps() {
-    if (this._gpsLoading) return `<p class="loading">Loading GPS entities�</p>`;
+  // ---- Floorplan ----
+  _metersToDisplay(m) {
+    if (this._floorplanUnits === "feet_inches") {
+      const totalInches = m * 39.3701;
+      const feet = Math.floor(totalInches / 12);
+      const inches = (totalInches % 12).toFixed(1);
+      return feet + "' " + inches + '"';
+    }
+    return Number(m).toFixed(2) + " m";
+  }
+  _displayToMeters(v) {
+    if (this._floorplanUnits === "feet_inches") return v * 0.3048;
+    return v;
+  }
+  _ensureFloorplanSubscription() {
+    if (!this._hass || !this._hass.connection || this._floorplanUnsub) return;
+    this._floorplanLoading = true;
+    this._render();
+    try {
+      const sub = this._hass.connection.subscribeMessage((msg) => {
+        const data = msg.data || msg;
+        const fp = data.floorplan || (data.data && data.data.floorplan) || data;
+        if (fp && fp.floors) {
+          this._floorplan = fp;
+          this._floorplanUnits = fp.units || "meters";
+          if (!this._selectedFloorId && fp.floors.length) this._selectedFloorId = fp.active_floor_id || fp.floors[0].id;
+          this._floorplanLoading = false;
+          this._floorplanError = null;
+          this._render();
+          this._renderFloorplanCanvas();
+        }
+      }, { type: "spatialHA/floorplan/subscribe" });
+      if (sub && typeof sub.then === "function") {
+        sub.then((unsub) => { this._floorplanUnsub = unsub; this._floorplanLoading = false; this._fetchFloorplanOnce(); }).catch(() => { this._floorplanLoading = false; this._fetchFloorplanOnce(); });
+      } else if (typeof sub === "function") { this._floorplanUnsub = sub; this._floorplanLoading = false; }
+      else { this._floorplanLoading = false; this._fetchFloorplanOnce(); }
+    } catch (e) { this._floorplanLoading = false; this._fetchFloorplanOnce(); }
+  }
+  async _fetchFloorplanOnce() {
+    if (!this._hass) return;
+    try {
+      const fp = await this._hass.callWS({ type: "spatialHA/floorplan/get" });
+      this._floorplan = fp;
+      this._floorplanUnits = fp.units || "meters";
+      if (!this._selectedFloorId && fp.floors && fp.floors.length) this._selectedFloorId = fp.active_floor_id || fp.floors[0].id;
+    } catch (err) { this._floorplanError = err.message || String(err); }
+    finally { this._floorplanLoading = false; this._render(); this._renderFloorplanCanvas(); }
+  }
+  async _saveFloorplan() {
+    if (!this._hass || !this._floorplan) return;
+    try { this._floorplan.units = this._floorplanUnits; this._floorplan.active_floor_id = this._selectedFloorId; await this._hass.callWS({ type: "spatialHA/floorplan/set", floorplan: this._floorplan }); } catch (e) { console.error(e); }
+  }
+  _getActiveFloor() {
+    if (!this._floorplan || !this._floorplan.floors) return null;
+    return this._floorplan.floors.find((f) => f.id === this._selectedFloorId) || this._floorplan.floors[0];
+  }
+  _worldToScreen(x, y, floor) {
+    const f = floor || this._getActiveFloor();
+    if (!f) return { x: 0, y: 0 };
+    const cos = Math.cos(f.rotation || 0), sin = Math.sin(f.rotation || 0);
+    const sx = (x * (f.scale || 1) + (f.offset_x || 0));
+    const sy = (y * (f.scale || 1) + (f.offset_y || 0));
+    const rx = sx * cos - sy * sin;
+    const ry = sx * sin + sy * cos;
+    return { x: rx * this._floorplanScale + this._floorplanOffset.x, y: ry * this._floorplanScale + this._floorplanOffset.y };
+  }
+  _screenToWorld(sx, sy, floor) {
+    const f = floor || this._getActiveFloor();
+    if (!f) return { x: 0, y: 0 };
+    const cos = Math.cos(f.rotation || 0), sin = Math.sin(f.rotation || 0);
+    const x = (sx - this._floorplanOffset.x) / this._floorplanScale;
+    const y = (sy - this._floorplanOffset.y) / this._floorplanScale;
+    const rx = x * cos + y * sin;
+    const ry = -x * sin + y * cos;
+    return { x: (rx - (f.offset_x || 0)) / (f.scale || 1), y: (ry - (f.offset_y || 0)) / (f.scale || 1) };
+  }
+  _renderFloorplanCanvas() {
+    const canvas = this.shadowRoot ? this.shadowRoot.getElementById("floorplan-canvas") : null;
+    if (!canvas || !this._floorplan) return;
+    const ctx = canvas.getContext("2d");
+    const floor = this._getActiveFloor();
+    if (!floor) return;
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = "#eee"; ctx.lineWidth = 0.5;
+    const gridStep = this._floorplanScale * (this._floorplanUnits === "meters" ? 1 : 0.6096);
+    for (let x = this._floorplanOffset.x % gridStep; x < w; x += gridStep) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+    for (let y = this._floorplanOffset.y % gridStep; y < h; y += gridStep) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+    for (const room of (floor.rooms || [])) {
+      if (!room.point_ids || room.point_ids.length < 3) continue;
+      const pts = room.point_ids.map((id) => floor.points.find((p) => p.id === id)).filter(Boolean);
+      if (pts.length < 3) continue;
+      ctx.fillStyle = room.color || "rgba(100,150,255,0.2)";
+      ctx.strokeStyle = room.color || "#6496ff"; ctx.lineWidth = 2;
+      ctx.beginPath();
+      pts.forEach((p, i) => { const s = this._worldToScreen(p.x, p.y, floor); if (i === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y); });
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#333"; ctx.font = "12px sans-serif";
+      const c = pts.reduce((a, p) => ({ x: a.x + p.x, y: a.y + p.y }), { x: 0, y: 0 }); c.x /= pts.length; c.y /= pts.length;
+      const sc = this._worldToScreen(c.x, c.y, floor); ctx.fillText(room.name || room.id, sc.x - 20, sc.y);
+    }
+    for (const wall of (floor.walls || [])) {
+      const p1 = floor.points.find((p) => p.id === wall.p1), p2 = floor.points.find((p) => p.id === wall.p2);
+      if (!p1 || !p2) continue;
+      const s1 = this._worldToScreen(p1.x, p1.y, floor), s2 = this._worldToScreen(p2.x, p2.y, floor);
+      if (this._selectedWallId === wall.id) { ctx.strokeStyle = "#ff6600"; ctx.lineWidth = 4; } else { ctx.strokeStyle = "#333"; ctx.lineWidth = 3; }
+      ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke();
+    }
+    for (const pt of (floor.points || [])) {
+      const s = this._worldToScreen(pt.x, pt.y, floor);
+      const isSelected = this._selectedPointId === pt.id;
+      ctx.fillStyle = isSelected ? "#ff6600" : "#03a9f4";
+      ctx.beginPath(); ctx.arc(s.x, s.y, 6, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "white"; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = "#333"; ctx.font = "11px sans-serif"; ctx.fillText(pt.label || pt.id, s.x + 8, s.y - 8);
+      ctx.fillText("(" + pt.x.toFixed(2) + "," + pt.y.toFixed(2) + ")", s.x + 8, s.y + 4);
+    }
+    if (this._contextMenu && this._contextMenu.pointId) {
+      const pt = floor.points.find((p) => p.id === this._contextMenu.pointId);
+      if (pt) {
+        const s = this._worldToScreen(pt.x, pt.y, floor);
+        const dirs = [{ dx: 0, dy: -1, arrow: "↑" }, { dx: 1, dy: 0, arrow: "→" }, { dx: 0, dy: 1, arrow: "↓" }, { dx: -1, dy: 0, arrow: "←" }];
+        dirs.forEach((d) => {
+          const ax = s.x + d.dx * 40, ay = s.y + d.dy * 40;
+          ctx.fillStyle = "rgba(255,255,255,0.9)"; ctx.strokeStyle = "#03a9f4"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(ax, ay, 14, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = "#03a9f4"; ctx.font = "bold 16px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(d.arrow, ax, ay);
+        });
+      }
+    }
+  }
+  _handleFloorplanClick(e) {
+    const canvas = this.shadowRoot.getElementById("floorplan-canvas");
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
+    const sx = (e.clientX - rect.left) * scaleX, sy = (e.clientY - rect.top) * scaleY;
+    const floor = this._getActiveFloor();
+    if (!floor) return;
+    if (this._contextMenu) {
+      const pt = floor.points.find((p) => p.id === this._contextMenu.pointId);
+      if (pt) {
+        const s = this._worldToScreen(pt.x, pt.y, floor);
+        const dirs = [{ dx: 0, dy: -1 }, { dx: 1, dy: 0 }, { dx: 0, dy: 1 }, { dx: -1, dy: 0 }];
+        for (const d of dirs) {
+          const ax = s.x + d.dx * 40, ay = s.y + d.dy * 40;
+          if (Math.hypot(sx - ax, sy - ay) < 16) {
+            const unitLabel = this._floorplanUnits === "meters" ? "meters" : "feet";
+            const def = this._floorplanUnits === "meters" ? "2" : "6";
+            const valStr = prompt("How many " + unitLabel + " away should the new point be placed?", def);
+            if (valStr === null) return;
+            const dist = parseFloat(valStr);
+            if (isNaN(dist) || dist <= 0) { alert("Invalid distance"); return; }
+            const distM = this._displayToMeters(dist);
+            const newX = pt.x + d.dx * distM;
+            const newY = pt.y + d.dy * distM;
+            const newId = "point_" + Date.now();
+            floor.points.push({ id: newId, x: newX, y: newY, label: newId });
+            floor.walls.push({ id: "wall_" + Date.now(), p1: pt.id, p2: newId });
+            this._selectedPointId = newId;
+            this._contextMenu = null;
+            this._saveFloorplan();
+            this._render();
+            this._renderFloorplanCanvas();
+            return;
+          }
+        }
+      }
+    }
+    for (const pt of floor.points) {
+      const s = this._worldToScreen(pt.x, pt.y, floor);
+      if (Math.hypot(sx - s.x, sy - s.y) < 12) {
+        if (e.button === 2) {
+          this._contextMenu = { x: sx, y: sy, pointId: pt.id };
+          this._selectedPointId = pt.id;
+          this._renderFloorplanCanvas();
+          return;
+        } else {
+          this._selectedPointId = pt.id;
+          this._selectedWallId = null;
+          this._contextMenu = null;
+          this._renderFloorplanCanvas();
+          return;
+        }
+      }
+    }
+    for (const wall of floor.walls) {
+      const p1 = floor.points.find((p) => p.id === wall.p1), p2 = floor.points.find((p) => p.id === wall.p2);
+      if (!p1 || !p2) continue;
+      const s1 = this._worldToScreen(p1.x, p1.y, floor), s2 = this._worldToScreen(p2.x, p2.y, floor);
+      const len = Math.hypot(s2.x - s1.x, s2.y - s1.y) || 1;
+      const dist = Math.abs((s2.y - s1.y) * sx - (s2.x - s1.x) * sy + s2.x * s1.y - s2.y * s1.x) / len;
+      const dot = ((sx - s1.x) * (s2.x - s1.x) + (sy - s1.y) * (s2.y - s1.y)) / (len * len);
+      if (dist < 10 && dot >= 0 && dot <= 1) {
+        this._selectedWallId = wall.id; this._selectedPointId = null; this._contextMenu = null; this._renderFloorplanCanvas(); return;
+      }
+    }
+    this._selectedPointId = null; this._selectedWallId = null; this._contextMenu = null; this._renderFloorplanCanvas();
+  }
+  _handleFloorplanMouseDown(e) {
+    if (e.button !== 0) return;
+    const canvas = this.shadowRoot.getElementById("floorplan-canvas");
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const sx = (e.clientX - rect.left) * (canvas.width / rect.width), sy = (e.clientY - rect.top) * (canvas.height / rect.height);
+    const floor = this._getActiveFloor();
+    if (!floor) return;
+    for (const pt of floor.points) {
+      const s = this._worldToScreen(pt.x, pt.y, floor);
+      if (Math.hypot(sx - s.x, sy - s.y) < 12) {
+        this._dragging = { pointId: pt.id, offsetX: sx - s.x, offsetY: sy - s.y };
+        canvas.style.cursor = "grabbing";
+        e.preventDefault();
+        return;
+      }
+    }
+    this._floorplanPanning = true;
+    this._floorplanPanStart = { x: e.clientX, y: e.clientY, ox: this._floorplanOffset.x, oy: this._floorplanOffset.y };
+  }
+  _handleFloorplanMouseMove(e) {
+    const canvas = this.shadowRoot.getElementById("floorplan-canvas");
+    if (!canvas) return;
+    const floor = this._getActiveFloor();
+    if (!floor) return;
+    if (this._dragging) {
+      const rect = canvas.getBoundingClientRect();
+      const sx = (e.clientX - rect.left) * (canvas.width / rect.width) - this._dragging.offsetX;
+      const sy = (e.clientY - rect.top) * (canvas.height / rect.height) - this._dragging.offsetY;
+      const w = this._screenToWorld(sx, sy, floor);
+      const pt = floor.points.find((p) => p.id === this._dragging.pointId);
+      if (pt) { pt.x = w.x; pt.y = w.y; this._renderFloorplanCanvas(); }
+      return;
+    }
+    if (this._floorplanPanning && this._floorplanPanStart) {
+      this._floorplanOffset.x = this._floorplanPanStart.ox + (e.clientX - this._floorplanPanStart.x);
+      this._floorplanOffset.y = this._floorplanPanStart.oy + (e.clientY - this._floorplanPanStart.y);
+      this._renderFloorplanCanvas();
+    }
+  }
+  _handleFloorplanMouseUp(e) {
+    if (this._dragging) {
+      this._dragging = null;
+      const canvas = this.shadowRoot.getElementById("floorplan-canvas");
+      if (canvas) canvas.style.cursor = "crosshair";
+      this._saveFloorplan();
+    }
+    if (this._floorplanPanning) { this._floorplanPanning = false; this._floorplanPanStart = null; }
+  }
+  _handleFloorplanWheel(e) {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    this._floorplanScale *= delta;
+    this._floorplanScale = Math.max(5, Math.min(200, this._floorplanScale));
+    this._renderFloorplanCanvas();
+  }
+  _renderFloorplan() {
+    if (this._floorplanLoading) return `<p class="loading">Loading floorplan…</p>`;
+    if (this._floorplanError) return `<p class="error">Error: ${this._esc(this._floorplanError)}</p><p><button id="floorplan-retry">Retry</button></p>`;
+    if (!this._floorplan || !this._floorplan.floors) return `<p>No floorplan.</p>`;
+    const floor = this._getActiveFloor();
+    if (!floor) return `<p>No active floor.</p>`;
+    const unitsSel = `<select id="floorplan-units"><option value="meters" ${this._floorplanUnits === "meters" ? "selected" : ""}>Meters</option><option value="feet_inches" ${this._floorplanUnits === "feet_inches" ? "selected" : ""}>Feet/Inches</option></select>`;
+    const floorTabs = this._floorplan.floors.map((f) => `<button data-floor="${this._esc(f.id)}" style="padding:6px 12px; margin:2px; border:1px solid #ccc; border-radius:4px; background:${f.id === this._selectedFloorId ? "#03a9f4" : "#fafafa"}; color:${f.id === this._selectedFloorId ? "white" : "#333"}; cursor:pointer;">${this._esc(f.name)} (L${f.level})</button>`).join("");
+    const wallsHtml = (floor.walls || []).map((w) => {
+      const p1 = floor.points.find((p) => p.id === w.p1), p2 = floor.points.find((p) => p.id === w.p2);
+      const len = p1 && p2 ? Math.hypot(p1.x - p2.x, p1.y - p2.y) : 0;
+      return `<tr><td><code>${this._esc(w.id)}</code></td><td>${this._esc(w.p1)}→${this._esc(w.p2)}</td><td>${this._esc(this._metersToDisplay(len))}</td><td><button data-del-wall="${this._esc(w.id)}">Delete</button></td></tr>`;
+    }).join("") || `<tr><td colspan="4"><em>No walls</em></td></tr>`;
+    const roomsHtml = (floor.rooms || []).map((r) => `<tr><td><code>${this._esc(r.id)}</code></td><td>${this._esc(r.name)}</td><td>${this._esc((r.point_ids || []).join(", "))}</td><td><input type="color" value="${this._esc(r.color || "#6496ff")}" data-room-color="${this._esc(r.id)}" style="width:40px;"></td><td><button data-del-room="${this._esc(r.id)}">Delete</button></td></tr>`).join("") || `<tr><td colspan="5"><em>No rooms</em></td></tr>`;
+    const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected: <code>${this._esc(pt.id)}</code> at (${pt.x.toFixed(2)}, ${pt.y.toFixed(2)}) m` : ""; })() : (this._selectedWallId ? `Selected wall: <code>${this._esc(this._selectedWallId)}</code>` : "Left-click selects/moves, right-click point for 4 arrows");
+    return `
+      <div class="card">
+        <h2>Floor Plan - ${this._esc(floor.name)}</h2>
+        <p>Multi-floor editor. Start point at 0,0. Units: ${unitsSel} (internal meters). Right-click point → 4 arrows → click arrow → dialog asks distance. Left-click selects/moves. Drag empty to pan, wheel to zoom.</p>
+        <div style="margin:8px 0; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+          <button id="floor-add">Add Floor</button>
+          <button id="floor-rename">Rename Floor</button>
+          <button id="floor-delete">Delete Floor</button>
+          <label>Level: <input id="floor-level" type="number" value="${floor.level}" style="width:60px"></label>
+        </div>
+        <div style="display:flex; gap:4px; margin:8px 0; flex-wrap:wrap;">${floorTabs}</div>
+        <div style="border:1px solid #ccc; border-radius:8px; overflow:hidden; background:#fafafa;">
+          <canvas id="floorplan-canvas" width="800" height="500" style="display:block; cursor:crosshair; width:100%; height:500px;"></canvas>
+        </div>
+        <p><small>${selectedInfo} | Scale: ${this._floorplanScale.toFixed(1)}px/m</small></p>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px;">
+          <div><h3>Walls</h3><p><button id="wall-add">Add Wall (selected + last)</button></p><table><thead><tr><th>ID</th><th>Points</th><th>Length</th><th>Action</th></tr></thead><tbody>${wallsHtml}</tbody></table></div>
+          <div><h3>Rooms</h3><p><button id="room-add">Add Room (all points)</button></p><table><thead><tr><th>ID</th><th>Name</th><th>Points</th><th>Color</th><th>Action</th></tr></thead><tbody>${roomsHtml}</tbody></table></div>
+        </div>
+        <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+          <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Floor Alignment</h4><label>Offset X (m): <input id="align-x" type="number" step="0.1" value="${floor.offset_x || 0}" style="width:80px"></label><br><label>Offset Y (m): <input id="align-y" type="number" step="0.1" value="${floor.offset_y || 0}" style="width:80px"></label><br><label>Scale: <input id="align-scale" type="number" step="0.1" value="${floor.scale || 1}" style="width:80px"></label><br><label>Rotation (deg): <input id="align-rot" type="number" step="1" value="${(((floor.rotation || 0) * 180 / Math.PI)).toFixed(1)}" style="width:80px"></label><br><button id="align-save">Save Alignment</button></div>
+          <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Points</h4><div style="max-height:150px; overflow:auto;">${floor.points.map((p) => `<div style="padding:4px; background:${p.id === this._selectedPointId ? "#e3f2fd" : "transparent"}; border-radius:4px;"><code>${this._esc(p.id)}</code> (${p.x.toFixed(2)},${p.y.toFixed(2)}) ${this._esc(p.label || "")} <button data-del-point="${this._esc(p.id)}" style="float:right;">Delete</button></div>`).join("")}</div><p><button id="point-add">Add Point at 0,0</button></p></div>
+        </div>
+      </div>
+    `;
+  }
+
+
+    _renderGps() {
+    if (this._gpsLoading) return `<p class="loading">Loading GPS entitiesï¿½</p>`;
     if (this._gpsError) return `<p class="error">Error: ${this._esc(this._gpsError)}</p><p><button id="gps-retry">Retry</button></p>`;
     if (!this._gpsData || !this._gpsData.entities || this._gpsData.entities.length === 0) {
       return `<p>No Device Tracker entities found. Ensure GPS trackers are configured.</p><p><button id="gps-retry">Refresh</button></p>`;
@@ -451,12 +749,12 @@ class SpatialHAPanel extends HTMLElement {
   }
 
   _renderBleScannerView() {
-    if (this._bleLoading) return `<p class="loading">Loading BLE devices via WebSocket… (auto-refresh every Update Interval)</p>`;
+    if (this._bleLoading) return `<p class="loading">Loading BLE devices via WebSocketâ€¦ (auto-refresh every Update Interval)</p>`;
     if (this._bleError) return `<p class="error">Error: ${this._esc(this._bleError)}</p><p><button id="ble-retry">Retry</button></p>`;
     if (!this._bleData || !this._bleData.sightings || this._bleData.sightings.length === 0) {
       const hasScanners = this._bleData && this._bleData.scanners && this._bleData.scanners.length > 0;
       if (!hasScanners) return `<p>No Bluetooth scanners found. Ensure Bluetooth proxies are configured. Data auto-updates every Update Interval.</p><p><button id="ble-retry">Refresh</button></p>`;
-      return `<p>No BLE devices found by scanners. Auto-refreshing…</p><p><button id="ble-retry">Refresh</button></p>`;
+      return `<p>No BLE devices found by scanners. Auto-refreshingâ€¦</p><p><button id="ble-retry">Refresh</button></p>`;
     }
     const sightings = this._bleData.sightings;
     let rows = sightings.map(s => `
@@ -470,7 +768,7 @@ class SpatialHAPanel extends HTMLElement {
     const updated = this._bleData.last_updated ? new Date(this._bleData.last_updated * 1000).toLocaleTimeString() : "";
     return `
       <div style="overflow:auto">
-        <p><em>Scanner view: every sighting (device × scanner). ${sightings.length} rows. Auto-updates every ${this._esc(String(this._bleData.update_interval || this._settings?.update_interval || 1))}s ${updated ? " – last: " + updated : ""}</em></p>
+        <p><em>Scanner view: every sighting (device Ã— scanner). ${sightings.length} rows. Auto-updates every ${this._esc(String(this._bleData.update_interval || this._settings?.update_interval || 1))}s ${updated ? " â€“ last: " + updated : ""}</em></p>
         <table>
           <thead><tr><th>Scanner</th><th>MAC / UUID</th><th>Name</th><th>RSSI</th></tr></thead>
           <tbody>${rows}</tbody>
@@ -480,10 +778,10 @@ class SpatialHAPanel extends HTMLElement {
   }
 
   _renderBleDeviceView() {
-    if (this._bleLoading) return `<p class="loading">Loading BLE devices via WebSocket… (auto-refresh every Update Interval)</p>`;
+    if (this._bleLoading) return `<p class="loading">Loading BLE devices via WebSocketâ€¦ (auto-refresh every Update Interval)</p>`;
     if (this._bleError) return `<p class="error">Error: ${this._bleError}</p><p><button id="ble-retry">Retry</button></p>`;
     if (!this._bleData || !this._bleData.devices || this._bleData.devices.length === 0) {
-      return `<p>No BLE devices found. Auto-refreshing…</p><p><button id="ble-retry">Refresh</button></p>`;
+      return `<p>No BLE devices found. Auto-refreshingâ€¦</p><p><button id="ble-retry">Refresh</button></p>`;
     }
     const scanners = this._bleData.scanners || [];
     const devices = this._bleData.devices;
@@ -493,7 +791,7 @@ class SpatialHAPanel extends HTMLElement {
         <tr><td><code>${this._esc(d.address)}</code></td><td>${this._esc(d.name)}</td><td>${d.ibeacon ? this._esc(d.ibeacon.uuid) + " " + d.ibeacon.major + "/" + d.ibeacon.minor : "N/A"}</td><td>N/A</td></tr>
       `).join("");
       return `
-        <p><em>Device view: ${devices.length} devices (no scanner info). Auto-refreshing…</em></p>
+        <p><em>Device view: ${devices.length} devices (no scanner info). Auto-refreshingâ€¦</em></p>
         <table><thead><tr><th>MAC / UUID</th><th>Name</th><th>iBeacon</th><th>RSSI</th></tr></thead><tbody>${rows}</tbody></table>
       `;
     }
@@ -508,7 +806,7 @@ class SpatialHAPanel extends HTMLElement {
     let rows = devices.map(dev => {
       let cols = `<td><code>${this._esc(dev.address)}</code></td><td>${this._esc(dev.name)}</td>`;
       if (hasIbeacon) {
-        const ib = dev.ibeacon ? `${this._esc(dev.ibeacon.uuid)}<br><small>${dev.ibeacon.major}/${dev.ibeacon.minor}</small>` : "—";
+        const ib = dev.ibeacon ? `${this._esc(dev.ibeacon.uuid)}<br><small>${dev.ibeacon.major}/${dev.ibeacon.minor}</small>` : "â€”";
         cols += `<td>${ib}</td>`;
       }
       const per = dev.per_scanner || {};
@@ -534,7 +832,7 @@ class SpatialHAPanel extends HTMLElement {
 
     return `
       <div style="overflow:auto">
-        <p><em>Device view: ${devices.length} unique devices, ${scanners.length} scanners. Each column is a scanner (RSSI or N/A). Auto-updates every ${this._esc(String(this._bleData.update_interval || this._settings?.update_interval || 1))}s ${updated ? " – last: " + updated : ""}</em></p>
+        <p><em>Device view: ${devices.length} unique devices, ${scanners.length} scanners. Each column is a scanner (RSSI or N/A). Auto-updates every ${this._esc(String(this._bleData.update_interval || this._settings?.update_interval || 1))}s ${updated ? " â€“ last: " + updated : ""}</em></p>
         <table>
           <thead><tr>${headerCols}</tr></thead>
           <tbody>${rows}</tbody>
@@ -544,7 +842,7 @@ class SpatialHAPanel extends HTMLElement {
   }
 
   _renderTargets() {
-    if (this._targetsLoading) return `<p class="loading">Loading targets…</p>`;
+    if (this._targetsLoading) return `<p class="loading">Loading targetsâ€¦</p>`;
     if (this._targetsError) return `<p class="error">Error: ${this._esc(this._targetsError)}</p><p><button id="targets-retry">Retry</button></p>`;
 
     let listHtml = "";
@@ -703,7 +1001,7 @@ class SpatialHAPanel extends HTMLElement {
     const homeContent = `
       <div class="card">
         <h1>This is the spatialHA panel</h1>
-        <p>Welcome to spatialHA – Home tab</p>
+        <p>Welcome to spatialHA â€“ Home tab</p>
         <p>Use the tabs above to navigate. All data is loaded via WebSocket through the backend.</p>
       </div>
     `;
@@ -731,14 +1029,14 @@ class SpatialHAPanel extends HTMLElement {
     }
 
     let settingsInner = "";
-    if (this._settingsLoading) settingsInner = `<p class="loading">Loading settings…</p>`;
+    if (this._settingsLoading) settingsInner = `<p class="loading">Loading settingsâ€¦</p>`;
     else if (this._settingsError) settingsInner = `<p class="error">Error: ${this._esc(this._settingsError)}</p><p><button id="settings-retry">Retry</button></p>`;
     else if (this._settings) {
       settingsInner = `
         <div class="field">
           <label for="interval-input">Update Interval (seconds, default 1)</label>
           <input id="interval-input" type="number" min="0.5" max="3600" step="0.5" value="${this._esc(this._pendingInterval)}" />
-          <button id="settings-save" ${this._settingsSaving ? "disabled" : ""}>${this._settingsSaving ? "Saving…" : "Save"}</button>
+          <button id="settings-save" ${this._settingsSaving ? "disabled" : ""}>${this._settingsSaving ? "Savingâ€¦" : "Save"}</button>
         </div>
         <p><small>Backend polls BLE data every Update Interval even without frontend and pushes to BLE tab. Stored in <code>.storage/spatialHA/settings</code> and <code>.storage/spatialHA/ble_data</code>.</small></p>
       `;
@@ -763,7 +1061,7 @@ class SpatialHAPanel extends HTMLElement {
     } else if (this._versionError) {
       aboutInner = `<p class="error">Error loading version: ${this._versionError}</p><p><button id="retry-btn">Retry</button></p>`;
     } else if (this._version !== null) {
-      aboutInner = `<p class="version">Current version: ${this._version}</p><p>Version fetched via <code>spatialHA/get_version</code> WebSocket (frontend → backend → Home Assistant).</p>`;
+      aboutInner = `<p class="version">Current version: ${this._version}</p><p>Version fetched via <code>spatialHA/get_version</code> WebSocket (frontend â†’ backend â†’ Home Assistant).</p>`;
     } else {
       aboutInner = `<p class="loading">No version loaded yet. Waiting for Home Assistant connection...</p>`;
     }
@@ -905,6 +1203,106 @@ class SpatialHAPanel extends HTMLElement {
     if (gpsRetry) gpsRetry.addEventListener("click", () => { if (this._gpsUnsub) { try { this._gpsUnsub(); } catch(e){} this._gpsUnsub=null; } this._gpsData=null; this._ensureGpsSubscription(); });
     const gpsRefresh = this.shadowRoot.getElementById("gps-refresh");
     if (gpsRefresh) gpsRefresh.addEventListener("click", () => { this._fetchGpsOnce(); });
+    // Floorplan bindings
+    const fpCanvas = this.shadowRoot.getElementById("floorplan-canvas");
+    if (fpCanvas) {
+      fpCanvas.oncontextmenu = (e) => { e.preventDefault(); this._handleFloorplanClick({ clientX: e.clientX, clientY: e.clientY, button: 2 }); };
+      fpCanvas.onclick = (e) => { if (e.button !== 2) this._handleFloorplanClick({ clientX: e.clientX, clientY: e.clientY, button: 0 }); };
+      fpCanvas.onmousedown = (e) => this._handleFloorplanMouseDown(e);
+      fpCanvas.onmousemove = (e) => this._handleFloorplanMouseMove(e);
+      fpCanvas.onmouseup = (e) => this._handleFloorplanMouseUp(e);
+      fpCanvas.onwheel = (e) => this._handleFloorplanWheel(e);
+      // Draw after DOM ready
+      setTimeout(() => this._renderFloorplanCanvas(), 0);
+    }
+    const fpRetry = this.shadowRoot.getElementById("floorplan-retry");
+    if (fpRetry) fpRetry.addEventListener("click", () => { this._floorplanError = null; this._fetchFloorplanOnce(); });
+    const unitsSel = this.shadowRoot.getElementById("floorplan-units");
+    if (unitsSel) unitsSel.addEventListener("change", (e) => { this._floorplanUnits = e.target.value; this._saveFloorplan(); this._render(); this._renderFloorplanCanvas(); });
+    this.shadowRoot.querySelectorAll("[data-floor]").forEach((b) => b.addEventListener("click", () => { this._selectedFloorId = b.getAttribute("data-floor"); this._selectedPointId = null; this._selectedWallId = null; this._contextMenu = null; this._saveFloorplan(); this._render(); this._renderFloorplanCanvas(); }));
+    const floorAdd = this.shadowRoot.getElementById("floor-add");
+    if (floorAdd) floorAdd.addEventListener("click", () => {
+      const name = prompt("Floor name?", "Floor " + (this._floorplan.floors.length + 1));
+      if (!name) return;
+      const lvlStr = prompt("Level (integer)?", String(this._floorplan.floors.length));
+      const lvl = parseInt(lvlStr || "0", 10) || 0;
+      const nid = "floor_" + Date.now();
+      this._floorplan.floors.push({ id: nid, name: name, level: lvl, offset_x: 0, offset_y: 0, scale: 1, rotation: 0, points: [{ id: "point_" + Date.now(), x: 0, y: 0, label: "Origin" }], walls: [], rooms: [] });
+      this._selectedFloorId = nid; this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    const floorRename = this.shadowRoot.getElementById("floor-rename");
+    if (floorRename) floorRename.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      const name = prompt("Rename floor?", f.name); if (!name) return; f.name = name; this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    const floorDel = this.shadowRoot.getElementById("floor-delete");
+    if (floorDel) floorDel.addEventListener("click", () => {
+      if (this._floorplan.floors.length <= 1) { alert("Cannot delete last floor"); return; }
+      if (!confirm("Delete floor?")) return;
+      this._floorplan.floors = this._floorplan.floors.filter((f) => f.id !== this._selectedFloorId);
+      this._selectedFloorId = this._floorplan.floors[0].id; this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    const floorLvl = this.shadowRoot.getElementById("floor-level");
+    if (floorLvl) floorLvl.addEventListener("change", (e) => { const f = this._getActiveFloor(); if (!f) return; f.level = parseInt(e.target.value, 10) || 0; this._saveFloorplan(); this._render(); });
+    const wallAdd = this.shadowRoot.getElementById("wall-add");
+    if (wallAdd) wallAdd.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      if (!this._selectedPointId) { alert("Select a point first"); return; }
+      const others = f.points.filter((pp) => pp.id !== this._selectedPointId);
+      if (!others.length) { alert("Need 2 points"); return; }
+      const last = others[others.length - 1];
+      f.walls.push({ id: "wall_" + Date.now(), p1: this._selectedPointId, p2: last.id });
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    this.shadowRoot.querySelectorAll("[data-del-wall]").forEach((b) => b.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      f.walls = f.walls.filter((w) => w.id !== b.getAttribute("data-del-wall"));
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    }));
+    const roomAdd = this.shadowRoot.getElementById("room-add");
+    if (roomAdd) roomAdd.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      if (f.points.length < 3) { alert("Need 3+ points"); return; }
+      const name = prompt("Room name?", "Room " + ((f.rooms || []).length + 1)); if (!name) return;
+      f.rooms.push({ id: "room_" + Date.now(), name: name, point_ids: f.points.map((pp) => pp.id), color: "#6496ff" });
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    this.shadowRoot.querySelectorAll("[data-del-room]").forEach((b) => b.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      f.rooms = (f.rooms || []).filter((r) => r.id !== b.getAttribute("data-del-room"));
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    }));
+    this.shadowRoot.querySelectorAll("[data-room-color]").forEach((inp) => inp.addEventListener("change", (e) => {
+      const f = this._getActiveFloor(); if (!f) return;
+      const r = (f.rooms || []).find((rr) => rr.id === e.target.getAttribute("data-room-color"));
+      if (r) { r.color = e.target.value; this._saveFloorplan(); this._renderFloorplanCanvas(); }
+    }));
+    const alignSave = this.shadowRoot.getElementById("align-save");
+    if (alignSave) alignSave.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      const ax = this.shadowRoot.getElementById("align-x"), ay = this.shadowRoot.getElementById("align-y"), sc = this.shadowRoot.getElementById("align-scale"), rt = this.shadowRoot.getElementById("align-rot");
+      if (ax) f.offset_x = parseFloat(ax.value) || 0;
+      if (ay) f.offset_y = parseFloat(ay.value) || 0;
+      if (sc) f.scale = parseFloat(sc.value) || 1;
+      if (rt) f.rotation = (parseFloat(rt.value) || 0) * Math.PI / 180;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    const pointAdd = this.shadowRoot.getElementById("point-add");
+    if (pointAdd) pointAdd.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      const nid = "point_" + Date.now();
+      f.points.push({ id: nid, x: 0, y: 0, label: nid });
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    this.shadowRoot.querySelectorAll("[data-del-point]").forEach((b) => b.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      const pid = b.getAttribute("data-del-point");
+      f.points = f.points.filter((pp) => pp.id !== pid);
+      f.walls = (f.walls || []).filter((w) => w.p1 !== pid && w.p2 !== pid);
+      (f.rooms || []).forEach((r) => { r.point_ids = (r.point_ids || []).filter((id) => id !== pid); });
+      if (this._selectedPointId === pid) this._selectedPointId = null;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    }));
 
     // Restore focus/selection (fix deselection on auto-refresh)
     if (activeId) {
@@ -930,21 +1328,6 @@ class SpatialHAPanel extends HTMLElement {
     }
   }
 
-  _renderGps() {
-    if (this._gpsLoading) return `<p class="loading">Loading GPS entities�</p>`;
-    if (this._gpsError) return `<p class="error">Error: ${this._esc(this._gpsError)}</p><p><button id="gps-retry">Retry</button></p>`;
-    if (!this._gpsData || !this._gpsData.entities || this._gpsData.entities.length===0) return `<p>No Device Tracker entities found.</p><p><button id="gps-retry">Refresh</button></p>`;
-    const entities = this._gpsData.entities;
-    let rows = entities.map(e => `<tr><td><code>${this._esc(e.entity_id)}</code></td><td>${this._esc(e.name)}</td><td style="color:${e.state==="home"?"var(--success-color, green)":"var(--error-color, #db4437)"};font-weight:600">${this._esc(e.state)}</td><td>${e.latitude!=null?this._esc(String(e.latitude)).slice(0,7)+", "+this._esc(String(e.longitude)).slice(0,7):"N/A"}</td><td><ha-icon icon="${this._esc(e.icon)}"></ha-icon></td></tr>`).join("");
-    return `<div class="card"><h2>GPS</h2><p>Device Tracker entities from HASS. Add them to Targets alongside BLE devices.</p><div style="overflow:auto"><table><thead><tr><th>Entity ID</th><th>Name</th><th>State</th><th>Location</th><th>Icon</th></tr></thead><tbody>${rows}</tbody></table></div><p><button id="gps-refresh">Refresh</button></p></div>`;
-  }
-
-  _toggleGpsEntity(eid) {
-    const idx = this._targetForm.gps_entities.indexOf(eid);
-    if (idx >=0) this._targetForm.gps_entities.splice(idx,1);
-    else this._targetForm.gps_entities.push(eid);
-    this._render();
-  }
 }
 
 if (!customElements.get("spatialHA-panel")) {
