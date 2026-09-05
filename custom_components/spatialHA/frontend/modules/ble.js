@@ -18,6 +18,15 @@ export const BleMixin = {
                 if (typeof this._queueRender === "function") this._queueRender();
                 else this._render();
               }
+              // Live map: redraw the Home canvas on pushes (throttled; canvas-only,
+              // no DOM rebuild, so it never disturbs focus/scroll/selection).
+              if (this._activeTab === "home" && typeof this._renderHomeIsoCanvas === "function") {
+                const now = Date.now();
+                if (now - (this._lastHomeDrawAt || 0) > 500) {
+                  this._lastHomeDrawAt = now;
+                  try { this._renderHomeIsoCanvas(); } catch (e) {}
+                }
+              }
             }
           },
           { type: "spatialHA/ble/subscribe" }

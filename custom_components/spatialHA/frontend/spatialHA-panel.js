@@ -7,7 +7,7 @@
 // tag here. A mixed-case guard never matches and lets a second execution
 // slip through to customElements.define, which throws "already been used".
 if (!customElements.get("spatialha-panel")) {
-const SPATIALHA_MOD_VERSION = "0.9.1.12";
+const SPATIALHA_MOD_VERSION = "0.9.1.13";
 function spatialHAModUrl(name) {
   return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
 }
@@ -26,6 +26,7 @@ class SpatialHAPanel extends HTMLElement {
     // clobber form input, checkboxes, or scroll every update interval).
     this._renderQueued = false;
     this._lastRenderAt = 0;
+    this._lastHomeDrawAt = 0;
     this._panelPointerDown = false;
     this._pointerBound = false;
     this._savedScroll = null;
@@ -156,6 +157,9 @@ class SpatialHAPanel extends HTMLElement {
     if (tab === "home") {
       if (!this._floorplan && !this._floorplanLoading && !this._floorplanUnsub) this._ensureFloorplanSubscription();
       else this._renderHomeIsoCanvas();
+      // Live map needs live positions: subscribe even if the BLE tab was never opened.
+      if (!this._bleUnsub) this._ensureBleSubscription();
+      else if (!this._bleData && !this._bleLoading) this._fetchBleOnce();
     }
   }
 
