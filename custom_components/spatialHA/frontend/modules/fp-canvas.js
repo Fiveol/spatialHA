@@ -514,14 +514,16 @@ export const FloorplanCanvasMixin = {
 
     _handleFloorplanKeyDown(e) {
       const isFp = this._activeTab === "floorplan";
-      if (!isFp) return;
-      if (e.key === "Escape" && (this._placingDoorType || this._placingWindow)) {
+      const isHome = this._activeTab === "home";
+      if (!isFp && !isHome) return;
+      if (isFp && e.key === "Escape" && (this._placingDoorType || this._placingWindow)) {
         this._placingDoorType = null;
         this._placingWindow = false;
         this._render(); this._fpRedraw();
         return;
       }
       const mod = e.ctrlKey || e.metaKey;
+      if (!isFp && mod) return;
       if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
         this._fpUndoDo();
@@ -595,7 +597,65 @@ export const FloorplanCanvasMixin = {
         this._fpRedraw();
         return;
       }
-      if ((e.key === "Delete" || e.key === "Backspace") && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement ? document.activeElement.tagName : "")) {
+      // Camera keys: WASDQE moves/zooms, arrows zoom/look. Works in edit mode too,
+      // but never while typing or with Ctrl/Cmd held.
+      const mod2 = e.ctrlKey || e.metaKey || e.altKey;
+      const typing2 = /INPUT|SELECT|TEXTAREA/.test(document.activeElement ? document.activeElement.tagName : "");
+      if (!mod2 && !typing2) {
+        const k = e.key.toLowerCase();
+        const PAN = 24, ANG = 5;
+        if (isFp && this._fpMode !== "3d") {
+          // 2D editor canvas: WASD/arrows pan, QE zoom.
+          let handled = true;
+          if (k === "w" || e.key === "ArrowUp") this._floorplanOffset.y += PAN;
+          else if (k === "s" || e.key === "ArrowDown") this._floorplanOffset.y -= PAN;
+          else if (k === "a" || e.key === "ArrowLeft") this._floorplanOffset.x += PAN;
+          else if (k === "d" || e.key === "ArrowRight") this._floorplanOffset.x -= PAN;
+          else if (k === "q") this._floorplanScale = Math.max(5, this._floorplanScale / 1.12);
+          else if (k === "e") this._floorplanScale = Math.min(200, this._floorplanScale * 1.12);
+          else handled = false;
+          if (handled) { e.preventDefault(); this._fpRedraw(); return; }
+        } else {
+          // 3D views (editor preview + home): WASD pan, QE zoom, arrows look.
+          const isEditor3D = isFp;
+          const getP = () => isEditor3D
+            ? { panX: this._fpPanX || 0, panY: this._fpPanY || 0, zoom: this._fpZoom || 1, yaw: this._fpYawOff || 0, pitch: this._fpPitchOff || 0 }
+            : { panX: this._homePanX || 0, panY: this._homePanY || 0, zoom: this._homeZoom || 1, yaw: this._homeYawOff || 0, pitch: this._homePitchOff || 0 };
+          const setP = (p) => {
+            if (isEditor3D) {
+              this._fpPanX = p.panX; this._fpPanY = p.panY; this._fpZoom = p.zoom;
+              this._fpYawOff = p.yaw; this._fpPitchOff = p.pitch;
+            } else {
+              this._homePanX = p.panX; this._homePanY = p.panY; this._homeZoom = p.zoom;
+              this._homeYawOff = p.yaw; this._homePitchOff = p.pitch;
+            }
+          };
+          const draw = () => {
+            if (isEditor3D) {
+              if (typeof this._requestDraw === "function") this._requestDraw("fpkeys", () => this._renderFloorPreview3D());
+              else this._renderFloorPreview3D();
+            } else {
+              if (typeof this._requestDraw === "function") this._requestDraw("homekeys", () => this._renderHomeIsoCanvas());
+              else this._renderHomeIsoCanvas();
+            }
+          };
+          const p = getP();
+          let handled = true;
+          if (k === "w") p.panY += PAN;
+          else if (k === "s") p.panY -= PAN;
+          else if (k === "a") p.panX += PAN;
+          else if (k === "d") p.panX -= PAN;
+          else if (k === "q") p.zoom = Math.max(0.4, p.zoom / 1.12);
+          else if (k === "e") p.zoom = Math.min(3, p.zoom * 1.12);
+          else if (e.key === "ArrowUp") p.pitch = Math.max(-60, p.pitch - ANG);
+          else if (e.key === "ArrowDown") p.pitch = Math.min(60, p.pitch + ANG);
+          else if (e.key === "ArrowLeft") p.yaw -= ANG;
+          else if (e.key === "ArrowRight") p.yaw += ANG;
+          else handled = false;
+          if (handled) { e.preventDefault(); setP(p); draw(); return; }
+        }
+      }
+      if (isFp && (e.key === "Delete" || e.key === "Backspace") && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement ? document.activeElement.tagName : "")) {
         const floor = this._getActiveFloor();
         if (!floor) return;
         if (this._selectedWindowId) {

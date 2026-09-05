@@ -62,7 +62,7 @@ export const FloorplanUiMixin = {
       return `
         <div class="card">
           <h2>Floor Plan - ${this._esc(floor.name)}</h2>
-          <p>Floor plan editor. Units: ${unitsSel}.</p>
+          <p>Floor plan editor. Units: ${unitsSel}. Keys: WASD move, QE zoom, arrows zoom/look.</p>
           <div style="margin:8px 0; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
             <button id="floor-add">Add Floor</button>
             <button id="floor-rename">Rename Floor</button>

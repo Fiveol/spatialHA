@@ -29,7 +29,19 @@ export const Home3DMixin = {
     this._fpView = id;
     this._fpYawOff = 0;
     this._fpPitchOff = 0;
+    this._fpPanX = 0;
+    this._fpPanY = 0;
     this._render();
+  },
+  _fpViewObj() {
+    const views = this._homeViews();
+    const base = views.find((v) => v.id === (this._fpView || "iso")) || views[0];
+    return {
+      yaw: (base.yaw + (this._fpYawOff || 0)) * Math.PI / 180,
+      pitch: Math.max(-80, Math.min(89.9, base.pitch + (this._fpPitchOff || 0))) * Math.PI / 180,
+      panX: this._fpPanX || 0,
+      panY: this._fpPanY || 0,
+    };
   },
   _fpPickFit() {
     // Fit + floor for picking on the editor 3D preview. Null when unavailable.
@@ -40,12 +52,7 @@ export const Home3DMixin = {
     const rect = canvas.getBoundingClientRect();
     const cssW = Math.max(300, Math.round(rect.width || 800));
     const cssH = 380;
-    const views = this._homeViews();
-    const base = views.find((v) => v.id === (this._fpView || "iso")) || views[0];
-    const view = {
-      yaw: (base.yaw + (this._fpYawOff || 0)) * Math.PI / 180,
-      pitch: Math.max(-80, Math.min(89.9, base.pitch + (this._fpPitchOff || 0))) * Math.PI / 180,
-    };
+    const view = this._fpViewObj();
     return { fit: this._compute3DFit(cssW, cssH, [floor], view, this._fpZoom || 1), floor, slabZ: 0.25 };
   },
   _renderFloorPreview3D() {
@@ -67,12 +74,7 @@ export const Home3DMixin = {
     ctx.lineJoin = "round"; ctx.lineCap = "round";
     ctx.fillStyle = "#14161a";
     ctx.fillRect(0, 0, cssW, cssH);
-    const views = this._homeViews();
-    const base = views.find((v) => v.id === (this._fpView || "iso")) || views[0];
-    const view = {
-      yaw: (base.yaw + (this._fpYawOff || 0)) * Math.PI / 180,
-      pitch: Math.max(-80, Math.min(89.9, base.pitch + (this._fpPitchOff || 0))) * Math.PI / 180,
-    };
+    const view = this._fpViewObj();
     this._draw3DScene(canvas, cssW, cssH, [floor], view, this._fpZoom || 1);
     // Editing overlays (selection, arrows, drag previews) in screen space
     const fit = this._compute3DFit(cssW, cssH, [floor], view, this._fpZoom || 1);
@@ -150,12 +152,7 @@ export const Home3DMixin = {
     const rect = canvas.getBoundingClientRect();
     const cssW = Math.max(300, Math.round(rect.width || 800));
     const cssH = 380;
-    const views = this._homeViews();
-    const base = views.find((v) => v.id === (this._fpView || "iso")) || views[0];
-    const view = {
-      yaw: (base.yaw + (this._fpYawOff || 0)) * Math.PI / 180,
-      pitch: Math.max(-80, Math.min(89.9, base.pitch + (this._fpPitchOff || 0))) * Math.PI / 180,
-    };
+    const view = this._fpViewObj();
     return { fit: this._compute3DFit(cssW, cssH, [floor], view, this._fpZoom || 1), floor, slabZ: 0.25 };
   },
   _homeProject(x, y, z, cx, cy, s, cosY, sinY, cosP, sinP) {
@@ -242,9 +239,10 @@ export const Home3DMixin = {
     }
     cc.x /= n || 1; cc.y /= n || 1; cc.z = maxZ / 2;
     // Note mirrored X to match plan orientation.
-    const cx = cssW / 2 + (cc.x * cosY - cc.y * sinY) * s;
+    // Optional screen-space pan (keyboard camera) keeps picking consistent.
+    const cx = cssW / 2 + (cc.x * cosY - cc.y * sinY) * s + (view.panX || 0);
     const y1c = cc.x * sinY + cc.y * cosY;
-    const cy = cssH / 2 + (y1c * sinP + cc.z * cosP) * s;
+    const cy = cssH / 2 + (y1c * sinP + cc.z * cosP) * s + (view.panY || 0);
     return { s, cx, cy, cosY, sinY, cosP, sinP, bases };
   },
   _project3DFit(fit, x, y, z) {
@@ -347,6 +345,8 @@ export const Home3DMixin = {
     ctx.fillRect(0, 0, cssW, cssH);
     const floors = [...this._floorplan.floors].sort((a, b) => (a.level || 0) - (b.level || 0));
     const cam = this._homeCam();
+    cam.panX = this._homePanX || 0;
+    cam.panY = this._homePanY || 0;
     this._draw3DScene(canvas, cssW, cssH, floors, cam, this._homeZoom || 1);
   },
 };

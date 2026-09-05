@@ -72,6 +72,10 @@ class SpatialHAPanel extends HTMLElement {
     this._floorplanOffset = {x: 400, y: 300};
     this._floorplanPanning = false;
     this._floorplanPanStart = null;
+    this._homePanX = 0;
+    this._homePanY = 0;
+    this._fpPanX = 0;
+    this._fpPanY = 0;
     this._fpSnapOn = true;
     this._fpSnapStep = "0.1";
     // Home 3D view state
@@ -292,7 +296,7 @@ class SpatialHAPanel extends HTMLElement {
         <div style="border:1px solid #333; border-radius:8px; overflow:hidden; background:#14161a;">
           <canvas id="home-iso-canvas" width="800" height="420" style="display:block; width:100%; height:420px; background:#14161a; cursor:grab;"></canvas>
         </div>
-        <p><small>Drag to rotate. Scroll to zoom.</small></p>
+        <p><small>Drag to rotate. Scroll to zoom. Keys: WASD move, QE zoom, arrows look.</small></p>
       </div>
     `;
 
@@ -524,8 +528,8 @@ class SpatialHAPanel extends HTMLElement {
       // Draw after DOM ready
       setTimeout(() => this._renderFloorplanCanvas(), 0);
     }
-    // Global keys for floorplan when tab active (undo/redo/copy/paste)
-    if (this._activeTab === "floorplan" && !this._fpKeyBound) {
+    // Global keys for floorplan + home camera (bound once; handler routes by tab)
+    if (!this._fpKeyBound) {
       this._fpKeyBound = true;
       // Bind once on shadow root
       this.shadowRoot.onkeydown = (e) => this._handleFloorplanKeyDown(e);
