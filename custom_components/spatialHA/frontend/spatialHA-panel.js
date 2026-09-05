@@ -351,12 +351,25 @@ class SpatialHAPanel extends HTMLElement {
   _renderFloorplanCanvas() {
     const canvas = this.shadowRoot ? this.shadowRoot.getElementById("floorplan-canvas") : null;
     if (!canvas || !this._floorplan) return;
+    // Fix stretch/blur: size backing store to displayed size * devicePixelRatio
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const cssW = Math.max(300, Math.floor(rect.width || canvas.clientWidth || 800));
+    const cssH = 500;
+    const wantW = Math.floor(cssW * dpr), wantH = Math.floor(cssH * dpr);
+    if (canvas.width !== wantW || canvas.height !== wantH) {
+      canvas.width = wantW;
+      canvas.height = wantH;
+    }
     const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const floor = this._getActiveFloor();
     if (!floor) return;
-    const w = canvas.width, h = canvas.height;
+    const w = cssW, h = cssH;
     ctx.clearRect(0, 0, w, h);
-    ctx.strokeStyle = "#eee"; ctx.lineWidth = 0.5;
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+    ctx.strokeStyle = "#eee"; ctx.lineWidth = 1;
     const gridStep = this._floorplanScale * (this._floorplanUnits === "meters" ? 1 : 0.6096);
     for (let x = this._floorplanOffset.x % gridStep; x < w; x += gridStep) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
     for (let y = this._floorplanOffset.y % gridStep; y < h; y += gridStep) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
@@ -399,6 +412,7 @@ class SpatialHAPanel extends HTMLElement {
           ctx.fillStyle = "rgba(255,255,255,0.9)"; ctx.strokeStyle = "#03a9f4"; ctx.lineWidth = 2;
           ctx.beginPath(); ctx.arc(ax, ay, 14, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
           ctx.fillStyle = "#03a9f4"; ctx.font = "bold 16px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(d.arrow, ax, ay);
+          ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
         });
       }
     }
@@ -407,8 +421,8 @@ class SpatialHAPanel extends HTMLElement {
     const canvas = this.shadowRoot.getElementById("floorplan-canvas");
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
-    const sx = (e.clientX - rect.left) * scaleX, sy = (e.clientY - rect.top) * scaleY;
+    // CSS pixels (worldToScreen returns CSS px, canvas is DPR-scaled via setTransform)
+    const sx = (e.clientX - rect.left), sy = (e.clientY - rect.top);
     const floor = this._getActiveFloor();
     if (!floor) return;
     if (this._contextMenu) {
@@ -476,7 +490,7 @@ class SpatialHAPanel extends HTMLElement {
     const canvas = this.shadowRoot.getElementById("floorplan-canvas");
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const sx = (e.clientX - rect.left) * (canvas.width / rect.width), sy = (e.clientY - rect.top) * (canvas.height / rect.height);
+    const sx = (e.clientX - rect.left), sy = (e.clientY - rect.top);
     const floor = this._getActiveFloor();
     if (!floor) return;
     for (const pt of floor.points) {
@@ -498,8 +512,8 @@ class SpatialHAPanel extends HTMLElement {
     if (!floor) return;
     if (this._dragging) {
       const rect = canvas.getBoundingClientRect();
-      const sx = (e.clientX - rect.left) * (canvas.width / rect.width) - this._dragging.offsetX;
-      const sy = (e.clientY - rect.top) * (canvas.height / rect.height) - this._dragging.offsetY;
+      const sx = (e.clientX - rect.left) - this._dragging.offsetX;
+      const sy = (e.clientY - rect.top) - this._dragging.offsetY;
       const w = this._screenToWorld(sx, sy, floor);
       const pt = floor.points.find((p) => p.id === this._dragging.pointId);
       if (pt) { pt.x = w.x; pt.y = w.y; this._renderFloorplanCanvas(); }
@@ -554,7 +568,7 @@ class SpatialHAPanel extends HTMLElement {
         </div>
         <div style="display:flex; gap:4px; margin:8px 0; flex-wrap:wrap;">${floorTabs}</div>
         <div style="border:1px solid #ccc; border-radius:8px; overflow:hidden; background:#fafafa;">
-          <canvas id="floorplan-canvas" width="800" height="500" style="display:block; cursor:crosshair; width:100%; height:500px;"></canvas>
+          <canvas id="floorplan-canvas" width="800" height="500" style="display:block; cursor:crosshair; width:100%; height:500px; image-rendering:auto;"></canvas>
         </div>
         <p><small>${selectedInfo} | Scale: ${this._floorplanScale.toFixed(1)}px/m</small></p>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px;">
