@@ -4,7 +4,7 @@ export const FloorplanUiMixin = {
       if (this._floorplanError) return `<p class="error">Error: ${this._esc(this._floorplanError)}</p><p><button id="floorplan-retry">Retry</button></p>`;
       if (!this._floorplan || !this._floorplan.floors) return `<p>No floorplan.</p>`;
       const floor = this._getActiveFloor();
-      if (!floor) return `<p>No active floor.</p>`;
+      if (!floor) return `<div class="card"><h2>Floor Plan</h2><p>No floors. Add one to begin.</p><p><button id="floor-add">Add Floor</button></p></div>`;
       const unitsSel = `<select id="floorplan-units"><option value="meters" ${this._floorplanUnits === "meters" ? "selected" : ""}>Meters</option><option value="feet_inches" ${this._floorplanUnits === "feet_inches" ? "selected" : ""}>Feet/Inches</option></select>`;
       const floorTabs = this._floorplan.floors.map((f) => `<button data-floor="${this._esc(f.id)}" style="padding:6px 12px; margin:2px; border:1px solid #ccc; border-radius:4px; background:${f.id === this._selectedFloorId ? "#03a9f4" : "#fafafa"}; color:${f.id === this._selectedFloorId ? "white" : "#333"}; cursor:pointer;">${this._esc(f.name)} (L${f.level})</button>`).join("");
       const wallsHtml = (floor.walls || []).map((w) => {
@@ -70,8 +70,25 @@ export const FloorplanUiMixin = {
             <label>Level: <input id="floor-level" type="number" value="${floor.level}" style="width:60px"></label>
           </div>
           <div style="display:flex; gap:4px; margin:8px 0; flex-wrap:wrap;">${floorTabs}</div>
-          <div id="floorplan-wrap" style="border:1px solid #333; border-radius:8px; overflow:hidden; background:#14161a; aspect-ratio: 8/5; max-height:520px;">
+          <div style="display:flex; gap:4px; margin:8px 0;">
+            <button data-fp-mode="2d" style="padding:6px 12px; border:1px solid #444; border-radius:4px; background:${(this._fpMode || "2d") === "2d" ? "#03a9f4" : "#1e2228"}; color:${(this._fpMode || "2d") === "2d" ? "white" : "#cfd6df"}; cursor:pointer;">2D</button>
+            <button data-fp-mode="3d" style="padding:6px 12px; border:1px solid #444; border-radius:4px; background:${this._fpMode === "3d" ? "#03a9f4" : "#1e2228"}; color:${this._fpMode === "3d" ? "white" : "#cfd6df"}; cursor:pointer;">3D</button>
+            <span style="flex:1"></span>
+            <span data-fp-views style="display:${this._fpMode === "3d" ? "flex" : "none"}; gap:4px;">
+              <button data-fp-view="iso">Isometric</button>
+              <button data-fp-view="top">Top Down</button>
+              <button data-fp-view="front">Front</button>
+              <button data-fp-view="back">Back</button>
+              <button data-fp-view="left">Left Side</button>
+              <button data-fp-view="right">Right Side</button>
+            </span>
+          </div>
+          <div id="floorplan-wrap" style="border:1px solid #333; border-radius:8px; overflow:hidden; background:#14161a; aspect-ratio: 8/5; max-height:520px; display:${(this._fpMode || "2d") === "2d" ? "block" : "none"};">
             <canvas id="floorplan-canvas" width="800" height="500" style="display:block; cursor:crosshair; width:100%; height:100%; background:#14161a;"></canvas>
+          </div>
+          <div id="floorplan-3d-wrap" style="border:1px solid #333; border-radius:8px; overflow:hidden; background:#14161a; display:${this._fpMode === "3d" ? "block" : "none"};">
+            <canvas id="floorplan-3d-canvas" width="800" height="380" style="display:block; width:100%; height:380px; background:#14161a; cursor:grab;"></canvas>
+            <p style="padding:0 12px;"><small>Drag to rotate. Scroll to zoom.</small></p>
           </div>
           <p><small>${selectedInfo} | Scale: ${this._floorplanScale.toFixed(1)}px/m</small></p>
           <div style="margin-top:12px; border:1px solid #eee; padding:10px; border-radius:6px;">

@@ -5,8 +5,8 @@ export const Home3DMixin = {
       { id: "top", label: "Top Down", yaw: 0, pitch: 89.9 },
       { id: "front", label: "Front", yaw: 0, pitch: 8 },
       { id: "back", label: "Back", yaw: 180, pitch: 8 },
-      { id: "left", label: "Left Side", yaw: -90, pitch: 8 },
-      { id: "right", label: "Right Side", yaw: 90, pitch: 8 },
+      { id: "left", label: "Left Side", yaw: 90, pitch: 8 },
+      { id: "right", label: "Right Side", yaw: -90, pitch: 8 },
     ];
   },
   _homeCam() {
@@ -23,26 +23,21 @@ export const Home3DMixin = {
     this._homePitchOff = 0;
     this._render();
   },
-  _homeProject(x, y, z, cx, cy, s, cosY, sinY, cosP, sinP) {
-    // Orbit camera: yaw around Z, pitch around X, orthographic.
-    const x1 = x * cosY - y * sinY;
-    const y1 = x * sinY + y * cosY;
-    const z1 = z;
-    const y2 = y1 * cosP - z1 * sinP;
-    const z2 = y1 * sinP + z1 * cosP;
-    return { x: cx + x1 * s, y: cy - z2 * s, depth: y2 };
+  _fpSetView(id) {
+    this._fpView = id;
+    this._fpYawOff = 0;
+    this._fpPitchOff = 0;
+    this._render();
   },
-  _renderHome3D() {
-    const canvas = this.shadowRoot ? this.shadowRoot.getElementById("home-iso-canvas") : null;
+  _renderFloorPreview3D() {
+    const canvas = this.shadowRoot ? this.shadowRoot.getElementById("floorplan-3d-canvas") : null;
     if (!canvas) return;
-    if (!this._floorplan || !this._floorplan.floors || !this._floorplan.floors.length) {
-      if (this._hass && !this._floorplan && !this._floorplanLoading) this._fetchFloorplanOnce();
-      return;
-    }
+    const floor = this._getActiveFloor();
+    if (!floor) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     const rect = canvas.getBoundingClientRect();
     const cssW = Math.max(300, Math.round(rect.width || 800));
-    const cssH = 420;
+    const cssH = 380;
     if (canvas.width !== Math.floor(cssW * dpr) || canvas.height !== Math.floor(cssH * dpr)) {
       canvas.width = Math.floor(cssW * dpr);
       canvas.height = Math.floor(cssH * dpr);
@@ -53,42 +48,25 @@ export const Home3DMixin = {
     ctx.lineJoin = "round"; ctx.lineCap = "round";
     ctx.fillStyle = "#14161a";
     ctx.fillRect(0, 0, cssW, cssH);
-    const floors = [...this._floorplan.floors].sort((a, b) => (a.level || 0) - (b.level || 0));
-    const cam = this._homeCam();
-    const cosY = Math.cos(cam.yaw), sinY = Math.sin(cam.yaw);
-    const cosP = Math.cos(cam.pitch), sinP = Math.sin(cam.pitch);
-    const GAP = 1.5;
-    // Stack base heights from floor heights
-    let zb = 0;
-    const bases = floors.map((f) => {
-      const z = zb;
-      zb += (parseFloat(f.height) || 3) + GAP;
-      return z;
-    });
-    const totalH = zb;
-    // Scene extents for fit
-    let maxDim = 10, maxZ = totalH || 6;
-    for (const f of floors) maxDim = Math.max(maxDim, parseFloat(f.width) || 10, parseFloat(f.depth) || 8);
-    const zoom = this._homeZoom || 1;
-    const s = Math.min(cssW / (maxDim * 2.1), cssH / (maxDim * 1.1 + maxZ * 0.9)) * zoom;
-    // Center scene: project centroid with cx=cy=0 then offset
-    const cc = { x: 0, y: 0, z: 0 };
-    let n = 0;
-    for (const f of floors) {
-      cc.x += (parseFloat(f.width) || 10) / 2; cc.y += (parseFloat(f.depth) || 8) / 2; n++;
-    }
-    cc.x /= n || 1; cc.y /= n || 1; cc.z = maxZ / 2;
-    const x1 = cc.x * cosY - cc.y * sinY;
-    const y1 = cc.x * sinY + cc.y * cosY;
-    const z2 = y1 * sinP + cc.z * cosP;
-    const cx = cssW / 2 - x1 * s, cy = cssH / 2 + z2 * s;
-    const proj = (x, y, z) => {
-      const ax = x * cosY - y * sinY;
-      const ay = x * sinY + y * cosY;
-      const bz = ay * sinP + z * cosP;
-      const depth = ay * cosP - z * sinP;
-      return { x: cx + ax * s, y: cy - bz * s, depth };
+    const views = this._homeViews();
+    const base = views.find((v) => v.id === (this._fpView || "iso")) || views[0];
+    const view = {
+      yaw: (base.yaw + (this._fpYawOff || 0)) * Math.PI / 180,
+      pitch: Math.max(-80, Math.min(89.9, base.pitch + (this._fpPitchOff || 0))) * Math.PI / 180,
     };
+    this._draw3DScene(canvas, cssW, cssH, [floor], view, this._fpZoom || 1);
+  },
+  _homeProject(x, y, z, cx, cy, s, cosY, sinY, cosP, sinP) {
+    // Orbit camera: yaw around Z, pitch around X, orthographic.
+    // Screen X is mirrored so plan top-left stays top-left.
+    const x1 = x * cosY - y * sinY;
+    const y1 = x * sinY + y * cosY;
+    const z1 = z;
+    const y2 = y1 * cosP - z1 * sinP;
+    const z2 = y1 * sinP + z1 * cosP;
+    return { x: cx - x1 * s, y: cy - z2 * s, depth: y2 };
+  },
+  _build3DFaces(floors, bases) {
     const faces = [];
     const lines = [];
     const dots = [];
@@ -139,14 +117,42 @@ export const Home3DMixin = {
       }
       faces.push({ label: (floor.name || "") + " (L" + (floor.level || 0) + ")", at: [0, 0, z0], isLabel: true });
     });
-    // Painter sort: far first
+    return { faces, lines, dots };
+  },
+  _draw3DScene(canvas, cssW, cssH, floors, view, zoom) {
+    const ctx = canvas.getContext("2d");
+    const cosY = Math.cos(view.yaw), sinY = Math.sin(view.yaw);
+    const cosP = Math.cos(view.pitch), sinP = Math.sin(view.pitch);
+    const GAP = 1.5;
+    let zb = 0;
+    const bases = floors.map((f) => {
+      const z = zb;
+      zb += (parseFloat(f.height) || 3) + GAP;
+      return z;
+    });
+    const totalH = zb;
+    let maxDim = 10, maxZ = totalH || 6;
+    for (const f of floors) maxDim = Math.max(maxDim, parseFloat(f.width) || 10, parseFloat(f.depth) || 8);
+    const s = Math.min(cssW / (maxDim * 2.1), cssH / (maxDim * 1.1 + maxZ * 0.9)) * (zoom || 1);
+    const cc = { x: 0, y: 0, z: 0 };
+    let n = 0;
+    for (const f of floors) {
+      cc.x += (parseFloat(f.width) || 10) / 2; cc.y += (parseFloat(f.depth) || 8) / 2; n++;
+    }
+    cc.x /= n || 1; cc.y /= n || 1; cc.z = maxZ / 2;
+    // Note mirrored X to match plan orientation.
+    const cx = cssW / 2 + (cc.x * cosY - cc.y * sinY) * s;
+    const y1c = cc.x * sinY + cc.y * cosY;
+    const cy = cssH / 2 + (y1c * sinP + cc.z * cosP) * s;
+    const proj = (x, y, z) => this._homeProject(x, y, z, cx, cy, s, cosY, sinY, cosP, sinP);
+    const scene = this._build3DFaces(floors, bases);
     const depthOf = (pts) => pts.reduce((a, p) => a + proj(p[0], p[1], p[2]).depth, 0) / pts.length;
-    faces.sort((a, b) => {
+    scene.faces.sort((a, b) => {
       if (a.isLabel) return 1;
       if (b.isLabel) return -1;
       return depthOf(b.pts) - depthOf(a.pts);
     });
-    for (const f of faces) {
+    for (const f of scene.faces) {
       if (f.isLabel) {
         const q = proj(f.at[0], f.at[1], f.at[2]);
         ctx.font = "12px sans-serif";
@@ -164,19 +170,63 @@ export const Home3DMixin = {
       });
       ctx.closePath(); ctx.fill(); ctx.stroke();
     }
-    const allLines = lines.map((l) => ({ ...l, depth: (proj(...l.a).depth + proj(...l.b).depth) / 2 }));
+    const allLines = scene.lines.map((l) => ({ ...l, depth: (proj(...l.a).depth + proj(...l.b).depth) / 2 }));
     allLines.sort((a, b) => b.depth - a.depth);
     for (const l of allLines) {
       const q1 = proj(...l.a), q2 = proj(...l.b);
       ctx.strokeStyle = l.stroke; ctx.lineWidth = l.width;
       ctx.beginPath(); ctx.moveTo(q1.x, q1.y); ctx.lineTo(q2.x, q2.y); ctx.stroke();
     }
-    const allDots = dots.map((d) => ({ ...d, depth: proj(...d.p).depth }));
+    const allDots = scene.dots.map((d) => ({ ...d, depth: proj(...d.p).depth }));
     allDots.sort((a, b) => b.depth - a.depth);
     for (const d of allDots) {
       const q = proj(...d.p);
       ctx.fillStyle = "#03a9f4";
       ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, Math.PI * 2); ctx.fill();
     }
+  },
+  _renderHome3D() {
+    const canvas = this.shadowRoot ? this.shadowRoot.getElementById("home-iso-canvas") : null;
+    if (!canvas) return;
+    if (!this._floorplan || !this._floorplan.floors || !this._floorplan.floors.length) {
+      if (this._hass && !this._floorplan && !this._floorplanLoading) this._fetchFloorplanOnce();
+      if (this._floorplan && this._floorplan.floors && !this._floorplan.floors.length) {
+        const dpr = Math.min(window.devicePixelRatio || 1, 3);
+        const rect = canvas.getBoundingClientRect();
+        const cssW = Math.max(300, Math.round(rect.width || 800));
+        const cssH = 420;
+        if (canvas.width !== Math.floor(cssW * dpr) || canvas.height !== Math.floor(cssH * dpr)) {
+          canvas.width = Math.floor(cssW * dpr);
+          canvas.height = Math.floor(cssH * dpr);
+          canvas.style.height = cssH + "px";
+        }
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.fillStyle = "#14161a";
+        ctx.fillRect(0, 0, cssW, cssH);
+        ctx.fillStyle = "#8b95a5";
+        ctx.font = "14px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("No floors. Add one in Floor Plan.", cssW / 2, cssH / 2);
+      }
+      return;
+    }
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const rect = canvas.getBoundingClientRect();
+    const cssW = Math.max(300, Math.round(rect.width || 800));
+    const cssH = 420;
+    if (canvas.width !== Math.floor(cssW * dpr) || canvas.height !== Math.floor(cssH * dpr)) {
+      canvas.width = Math.floor(cssW * dpr);
+      canvas.height = Math.floor(cssH * dpr);
+      canvas.style.height = cssH + "px";
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.fillStyle = "#14161a";
+    ctx.fillRect(0, 0, cssW, cssH);
+    const floors = [...this._floorplan.floors].sort((a, b) => (a.level || 0) - (b.level || 0));
+    const cam = this._homeCam();
+    this._draw3DScene(canvas, cssW, cssH, floors, cam, this._homeZoom || 1);
   },
 };

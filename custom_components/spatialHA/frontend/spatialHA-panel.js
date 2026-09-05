@@ -4,7 +4,7 @@
  * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
 if (!customElements.get("spatialHA-panel")) {
-const SPATIALHA_MOD_VERSION = "0.9.0";
+const SPATIALHA_MOD_VERSION = "0.9.1";
 function spatialHAModUrl(name) {
   return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
 }
@@ -57,6 +57,13 @@ class SpatialHAPanel extends HTMLElement {
     this._placingDoorType = null;
     this._selectedWindowId = null;
     this._placingWindow = false;
+    // Floorplan 3D preview state
+    this._fpMode = "2d";
+    this._fpView = "iso";
+    this._fpYawOff = 0;
+    this._fpPitchOff = 0;
+    this._fpZoom = 1;
+    this._fpRotating = false;
     this._contextMenu = null; // {x,y,pointId}
     this._dragging = null;
     this._floorplanScale = 40; // px per meter
@@ -508,6 +515,44 @@ class SpatialHAPanel extends HTMLElement {
       // Bind once on shadow root
       this.shadowRoot.onkeydown = (e) => this._handleFloorplanKeyDown(e);
     }
+    this.shadowRoot.querySelectorAll("[data-fp-mode]").forEach((b) => b.addEventListener("click", () => {
+      this._fpMode = b.getAttribute("data-fp-mode");
+      this._render();
+      setTimeout(() => {
+        if (typeof this._renderFloorPreview3D === "function") this._renderFloorPreview3D();
+        else this._renderFloorplanCanvas();
+      }, 0);
+    }));
+    this.shadowRoot.querySelectorAll("[data-fp-view]").forEach((b) => b.addEventListener("click", () => {
+      if (typeof this._fpSetView === "function") this._fpSetView(b.getAttribute("data-fp-view"));
+      else { this._fpView = b.getAttribute("data-fp-view"); this._render(); }
+    }));
+    const fp3d = this.shadowRoot.getElementById("floorplan-3d-canvas");
+    if (fp3d) {
+      setTimeout(() => { if (typeof this._renderFloorPreview3D === "function") this._renderFloorPreview3D(); }, 0);
+      fp3d.onmousedown = (e) => {
+        if (e.button !== 0) return;
+        this._fpRotating = true;
+        this._fpRotStart = { x: e.clientX, y: e.clientY, yaw: this._fpYawOff || 0, pitch: this._fpPitchOff || 0 };
+        fp3d.style.cursor = "grabbing";
+        e.preventDefault();
+      };
+      fp3d.onmousemove = (e) => {
+        if (!this._fpRotating || !this._fpRotStart) return;
+        this._fpYawOff = this._fpRotStart.yaw - (e.clientX - this._fpRotStart.x) * 0.4;
+        this._fpPitchOff = Math.max(-60, Math.min(60, this._fpRotStart.pitch + (e.clientY - this._fpRotStart.y) * 0.3));
+        if (typeof this._requestDraw === "function") this._requestDraw("fp3d", () => this._renderFloorPreview3D());
+        else this._renderFloorPreview3D();
+      };
+      fp3d.onmouseup = () => { this._fpRotating = false; fp3d.style.cursor = "grab"; };
+      fp3d.onmouseleave = () => { this._fpRotating = false; fp3d.style.cursor = "grab"; };
+      fp3d.onwheel = (e) => {
+        e.preventDefault();
+        this._fpZoom = Math.max(0.4, Math.min(3, (this._fpZoom || 1) * (e.deltaY > 0 ? 0.92 : 1.08)));
+        if (typeof this._requestDraw === "function") this._requestDraw("fp3d", () => this._renderFloorPreview3D());
+        else this._renderFloorPreview3D();
+      };
+    }
     const fpRetry = this.shadowRoot.getElementById("floorplan-retry");
     if (fpRetry) fpRetry.addEventListener("click", () => { this._floorplanError = null; this._fetchFloorplanOnce(); });
     const unitsSel = this.shadowRoot.getElementById("floorplan-units");
@@ -525,7 +570,7 @@ class SpatialHAPanel extends HTMLElement {
       };
       hc.onmousemove = (e) => {
         if (!this._homeRotating || !this._homeRotStart) return;
-        this._homeYawOff = this._homeRotStart.yaw + (e.clientX - this._homeRotStart.x) * 0.4;
+        this._homeYawOff = this._homeRotStart.yaw - (e.clientX - this._homeRotStart.x) * 0.4;
         this._homePitchOff = Math.max(-60, Math.min(60, this._homeRotStart.pitch + (e.clientY - this._homeRotStart.y) * 0.3));
         if (typeof this._requestDraw === "function") this._requestDraw("home3d", () => this._renderHomeIsoCanvas());
         else this._renderHomeIsoCanvas();
@@ -561,11 +606,14 @@ class SpatialHAPanel extends HTMLElement {
     });
     const floorDel = this.shadowRoot.getElementById("floor-delete");
     if (floorDel) floorDel.addEventListener("click", () => {
-      if (this._floorplan.floors.length <= 1) { alert("Cannot delete last floor"); return; }
+      if (!this._floorplan.floors.length) return;
       if (!confirm("Delete floor?")) return;
       this._fpPushUndo();
       this._floorplan.floors = this._floorplan.floors.filter((f) => f.id !== this._selectedFloorId);
-      this._selectedFloorId = this._floorplan.floors[0].id; this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+      this._selectedFloorId = this._floorplan.floors.length ? this._floorplan.floors[0].id : null;
+      this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null;
+      this._selectedWindowId = null; this._contextMenu = null;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
     });
     const floorLvl = this.shadowRoot.getElementById("floor-level");
     if (floorLvl) floorLvl.addEventListener("change", (e) => { const f = this._getActiveFloor(); if (!f) return; this._fpPushUndo(); f.level = parseInt(e.target.value, 10) || 0; this._saveFloorplan(); this._render(); });
