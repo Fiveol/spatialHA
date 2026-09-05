@@ -4,7 +4,7 @@
  * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
 if (!customElements.get("spatialHA-panel")) {
-const SPATIALHA_MOD_VERSION = "0.9.1.7";
+const SPATIALHA_MOD_VERSION = "0.9.1.8";
 function spatialHAModUrl(name) {
   return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
 }

@@ -75,7 +75,8 @@ export const Home3DMixin = {
     ctx.fillStyle = "#14161a";
     ctx.fillRect(0, 0, cssW, cssH);
     const view = this._fpViewObj();
-    this._draw3DScene(canvas, cssW, cssH, [floor], view, this._fpZoom || 1);
+    // Editor preview: never show estimated devices (Home 3D view only).
+    this._draw3DScene(canvas, cssW, cssH, [floor], view, this._fpZoom || 1, { positions: false });
     // Editing overlays (selection, arrows, drag previews) in screen space
     const fit = this._compute3DFit(cssW, cssH, [floor], view, this._fpZoom || 1);
     const proj = (x, y, z) => this._project3DFit(fit, x, y, z);
@@ -169,7 +170,7 @@ export const Home3DMixin = {
     const z2 = y1 * sinP + z1 * cosP;
     return { x: cx - x1 * s, y: cy - z2 * s, depth: y2 };
   },
-  _build3DFaces(floors, bases) {
+  _build3DFaces(floors, bases, opts) {
     const faces = [];
     const lines = [];
     const dots = [];
@@ -224,14 +225,16 @@ export const Home3DMixin = {
         lines.push({ a: [rx.x, rx.y, z0 + 0.25], b: [rx.x, rx.y, z0 + 0.9], stroke: rxFill, width: 3 });
         dots.push({ p: [rx.x, rx.y, z0 + 0.9], fill: rxFill });
       }
-      // Estimated device positions (rough triangulation, cross-floor in 3D)
-      if (typeof this === "undefined" || this._showPositions !== false) {
+      // Estimated device positions (rough triangulation, cross-floor in 3D).
+      // Hidden in the floorplan editor preview via opts.positions === false.
+      if (!(opts && opts.positions === false) && (typeof this === "undefined" || this._showPositions !== false)) {
         const allPos = (typeof this !== "undefined" && this._bleData && this._bleData.positions) || [];
         for (const pos of allPos) {
           if (pos.floor_id !== floor.id) continue;
           const pz = (typeof pos.z === "number" && isFinite(pos.z)) ? pos.z : z0 + 0.6;
+          const label = String(pos.name || pos.address || "");
           lines.push({ a: [pos.x, pos.y, z0 + 0.25], b: [pos.x, pos.y, pz], stroke: "#f59e0b", width: 2 });
-          dots.push({ p: [pos.x, pos.y, pz], fill: "#f59e0b" });
+          dots.push({ p: [pos.x, pos.y, pz], fill: "#f59e0b", label });
         }
       }
       // Bluetooth scanners as purple posts (placement only for now)
@@ -285,11 +288,11 @@ export const Home3DMixin = {
       y: -ax * fit.sinY + y1 * fit.cosY,
     };
   },
-  _draw3DScene(canvas, cssW, cssH, floors, view, zoom) {
+  _draw3DScene(canvas, cssW, cssH, floors, view, zoom, opts) {
     const ctx = canvas.getContext("2d");
     const fit = this._compute3DFit(cssW, cssH, floors, view, zoom);
     const proj = (x, y, z) => this._project3DFit(fit, x, y, z);
-    const scene = this._build3DFaces(floors, fit.bases);
+    const scene = this._build3DFaces(floors, fit.bases, opts);
     const depthOf = (pts) => pts.reduce((a, p) => a + proj(p[0], p[1], p[2]).depth, 0) / pts.length;
     scene.faces.sort((a, b) => {
       if (a.isLabel) return 1;
@@ -327,6 +330,12 @@ export const Home3DMixin = {
       const q = proj(...d.p);
       ctx.fillStyle = d.fill || "#03a9f4";
       ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, Math.PI * 2); ctx.fill();
+      if (d.label) {
+        ctx.font = "11px sans-serif";
+        ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.85)";
+        ctx.strokeText(d.label, q.x + 6, q.y - 6);
+        ctx.fillStyle = "#f1f3f5"; ctx.fillText(d.label, q.x + 6, q.y - 6);
+      }
     }
   },
   _renderHome3D() {
