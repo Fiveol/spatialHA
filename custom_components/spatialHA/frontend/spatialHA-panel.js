@@ -366,22 +366,30 @@ class SpatialHAPanel extends HTMLElement {
     }
     const scanners = this._bleData.scanners || [];
     const devices = this._bleData.devices;
+    const updated = this._bleData.last_updated ? new Date(this._bleData.last_updated * 1000).toLocaleTimeString() : "";
     if (scanners.length === 0) {
       let rows = devices.map(d => `
-        <tr><td><code>${this._esc(d.address)}</code></td><td>${this._esc(d.name)}</td><td>N/A</td></tr>
+        <tr><td><code>${this._esc(d.address)}</code></td><td>${this._esc(d.name)}</td><td>${d.ibeacon ? this._esc(d.ibeacon.uuid) + " " + d.ibeacon.major + "/" + d.ibeacon.minor : "N/A"}</td><td>N/A</td></tr>
       `).join("");
       return `
         <p><em>Device view: ${devices.length} devices (no scanner info). Auto-refreshing…</em></p>
-        <table><thead><tr><th>MAC / UUID</th><th>Name</th><th>RSSI</th></tr></thead><tbody>${rows}</tbody></table>
+        <table><thead><tr><th>MAC / UUID</th><th>Name</th><th>iBeacon</th><th>RSSI</th></tr></thead><tbody>${rows}</tbody></table>
       `;
     }
     let headerCols = `<th>MAC / UUID</th><th>Name</th>`;
+    // Add iBeacon column if any device has iBeacon
+    const hasIbeacon = devices.some(d => d.ibeacon);
+    if (hasIbeacon) headerCols += `<th>iBeacon UUID</th>`;
     scanners.forEach(sc => {
       const label = this._esc(sc.name || sc.source);
       headerCols += `<th>${label}<br><small>${this._esc(sc.source)}</small></th>`;
     });
     let rows = devices.map(dev => {
       let cols = `<td><code>${this._esc(dev.address)}</code></td><td>${this._esc(dev.name)}</td>`;
+      if (hasIbeacon) {
+        const ib = dev.ibeacon ? `${this._esc(dev.ibeacon.uuid)}<br><small>${dev.ibeacon.major}/${dev.ibeacon.minor}</small>` : "—";
+        cols += `<td>${ib}</td>`;
+      }
       const per = dev.per_scanner || {};
       scanners.forEach(sc => {
         const key = sc.source;
@@ -405,7 +413,7 @@ class SpatialHAPanel extends HTMLElement {
 
     return `
       <div style="overflow:auto">
-        <p><em>Device view: ${devices.length} unique devices, ${scanners.length} scanners. Each column is a scanner (RSSI or N/A). Auto-updates every ${this._esc(String(this._bleData.update_interval || this._settings?.update_interval || 1))}s ${updated ? " – last: " + new Date(this._bleData.last_updated * 1000).toLocaleTimeString() : ""}</em></p>
+        <p><em>Device view: ${devices.length} unique devices, ${scanners.length} scanners. Each column is a scanner (RSSI or N/A). Auto-updates every ${this._esc(String(this._bleData.update_interval || this._settings?.update_interval || 1))}s ${updated ? " – last: " + updated : ""}</em></p>
         <table>
           <thead><tr>${headerCols}</tr></thead>
           <tbody>${rows}</tbody>

@@ -295,53 +295,6 @@ def _compute_target_state(target: dict, ble_data: dict | None, hass: HomeAssista
         pass
 
     return "home"
-    # Build set of seen addresses (upper)
-    seen: set[str] = set()
-    # From sightings and devices
-    for dev in ble_data.get("devices", []):
-        # dev has per_scanner map, if any scanner sees it, it's home
-        per = dev.get("per_scanner") or {}
-        # If any scanner has RSSI not N/A, it's seen
-        for rssi in per.values():
-            if rssi is not None:
-                seen.add(str(dev.get("address", "")).upper())
-                break
-        # Also check if device itself is present (fallback)
-        if dev.get("address"):
-            # If device exists in ble_data, it was seen at least once, but check per_scanner
-            # If per_scanner empty, check if device was in discovered list
-            if not per and dev.get("address"):
-                seen.add(str(dev["address"]).upper())
-    for sight in ble_data.get("sightings", []):
-        if sight.get("rssi") is not None:
-            seen.add(str(sight.get("address", "")).upper())
-
-    # For each assigned BLE device, check if it's seen
-    for addr in ble_devices:
-        addr_upper = str(addr).upper()
-        # If any assigned device is NOT seen (Away), target is away
-        if addr_upper not in seen:
-            return "not_home"
-        # Also check per_scanner for that address specifically
-        # Find device in ble_data
-        found = False
-        for dev in ble_data.get("devices", []):
-            if str(dev.get("address", "")).upper() == addr_upper:
-                per = dev.get("per_scanner") or {}
-                # If all scanners N/A or per empty, consider away
-                has_seen = any(v is not None for v in per.values())
-                if not has_seen:
-                    # Check sightings
-                    has_seen = any(str(s.get("address", "")).upper() == addr_upper and s.get("rssi") is not None for s in ble_data.get("sightings", []))
-                if not has_seen:
-                    return "not_home"
-                found = True
-                break
-        if not found:
-            # Device not in ble_data at all -> away
-            return "not_home"
-    # All assigned devices are seen -> home
-    return "home"
 
 
 async def _async_update_target_trackers(hass: HomeAssistant) -> None:
