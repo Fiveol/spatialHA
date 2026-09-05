@@ -62,7 +62,8 @@ export const BleMixin = {
         if (!hasScanners) return `<p>No scanners found.</p><p><button id="ble-retry">Refresh</button></p>`;
         return `<p>No devices found.</p><p><button id="ble-retry">Refresh</button></p>`;
       }
-      const sightings = this._bleData.sightings;
+      const _fq = (this._bleFilter || "").trim().toLowerCase();
+      const sightings = (this._bleData.sightings || []).filter((s) => !_fq || [s.scanner_name || s.source, s.address, s.name || "", ...((s.service_uuids || []).map(String))].join(" ").toLowerCase().includes(_fq));
       let rows = sightings.map(s => `
         <tr>
           <td>${this._esc(s.scanner_name || s.source)}</td>
@@ -73,7 +74,7 @@ export const BleMixin = {
       `).join("");
       return `
         <div style="overflow:auto">
-          <p><em>${sightings.length} sightings.</em></p>
+          <p><input id="ble-filter" type="search" placeholder="Filter" value="${this._esc(this._bleFilter || "")}" style="max-width:220px"> <em>${sightings.length} sightings.</em></p>
           <table>
             <thead><tr><th>Scanner</th><th>MAC / UUID</th><th>Name</th><th>RSSI</th></tr></thead>
             <tbody>${rows}</tbody>
@@ -89,14 +90,16 @@ export const BleMixin = {
         return `<p>No BLE devices found. Auto-refreshingâ€¦</p><p><button id="ble-retry">Refresh</button></p>`;
       }
       const scanners = this._bleData.scanners || [];
-      const devices = this._bleData.devices;
+      const _fq2 = (this._bleFilter || "").trim().toLowerCase();
+      const _match = (d) => !_fq2 || [d.address, d.name || "", ...((d.service_uuids || []).map(String)), d.ibeacon ? d.ibeacon.uuid : ""].join(" ").toLowerCase().includes(_fq2);
+      const devices = (this._bleData.devices || []).filter(_match);
       const updated = this._bleData.last_updated ? new Date(this._bleData.last_updated * 1000).toLocaleTimeString() : "";
       if (scanners.length === 0) {
         let rows = devices.map(d => `
           <tr><td><code>${this._esc(d.address)}</code></td><td>${this._esc(d.name)}</td><td>${d.ibeacon ? this._esc(d.ibeacon.uuid) + " " + d.ibeacon.major + "/" + d.ibeacon.minor : "N/A"}</td><td>N/A</td></tr>
         `).join("");
         return `
-          <p><em>${devices.length} devices. Auto-refreshingâ€¦</em></p>
+          <p><input id="ble-filter" type="search" placeholder="Filter" value="${this._esc(this._bleFilter || "")}" style="max-width:220px"> <em>${devices.length} devices.</em></p>
           <table><thead><tr><th>MAC / UUID</th><th>Name</th><th>iBeacon</th><th>RSSI</th></tr></thead><tbody>${rows}</tbody></table>
         `;
       }
@@ -137,7 +140,7 @@ export const BleMixin = {
 
       return `
         <div style="overflow:auto">
-          <p><em>${devices.length} devices · ${scanners.length} scanners.</em></p>
+          <p><input id="ble-filter" type="search" placeholder="Filter" value="${this._esc(this._bleFilter || "")}" style="max-width:220px"> <em>${devices.length} devices / ${scanners.length} scanners.</em></p>
           <table>
             <thead><tr>${headerCols}</tr></thead>
             <tbody>${rows}</tbody>

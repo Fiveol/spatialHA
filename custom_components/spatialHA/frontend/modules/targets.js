@@ -122,6 +122,20 @@ export const TargetsMixin = {
         gps_entities: [...(target.gps_entities || [])],
       };
       this._render();
+      this._ensureTargetOptions();
+    },
+
+    _ensureTargetOptions() {
+      // Make sure BLE + GPS option lists populate even if those tabs were never opened.
+      if (!this._hass) return;
+      try {
+        if (!this._bleUnsub) this._ensureBleSubscription();
+        else if (!this._bleData && !this._bleLoading) this._fetchBleOnce();
+      } catch (e) {}
+      try {
+        if (!this._gpsUnsub) this._ensureGpsSubscription();
+        else if (!this._gpsData && !this._gpsLoading) this._fetchGpsOnce();
+      } catch (e) {}
     },
 
     _startAdd() {
@@ -129,6 +143,7 @@ export const TargetsMixin = {
       this._showAddForm = true;
       this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [], gps_entities: [] };
       this._render();
+      this._ensureTargetOptions();
     },
 
     _cancelForm() {

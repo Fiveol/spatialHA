@@ -222,8 +222,8 @@ export const FloorplanCanvasMixin = {
               if (valStr === null) return;
               const distM = this._parseDisplayToMeters(valStr);
               if (isNaN(distM) || distM <= 0) { alert("Invalid distance (try 6' 11\" or 2.5)"); return; }
-              let newX = pt.x + d.dx * distM;
-              let newY = pt.y + d.dy * distM;
+              let newX = typeof this._fpSnapVal === "function" ? this._fpSnapVal(pt.x + d.dx * distM) : pt.x + d.dx * distM;
+              let newY = typeof this._fpSnapVal === "function" ? this._fpSnapVal(pt.y + d.dy * distM) : pt.y + d.dy * distM;
               const cl = this._clampToFloor(floor, newX, newY);
               newX = cl.x; newY = cl.y;
               this._fpPushUndo();
@@ -243,7 +243,8 @@ export const FloorplanCanvasMixin = {
       // Window placement mode: left-click places window origin (lower-left corner)
       if (this._placingWindow && e.button !== 2) {
         const w = this._fpToWorld(sx, sy, floor);
-        const cl = this._clampToFloor(floor, w.x, w.y);
+        const snw = (v) => (typeof this._fpSnapVal === "function" ? this._fpSnapVal(v) : v);
+        const cl = this._clampToFloor(floor, snw(w.x), snw(w.y));
         const defs = this._windowDefaults();
         this._fpPushUndo();
         const nid = "window_" + Date.now();
@@ -264,7 +265,8 @@ export const FloorplanCanvasMixin = {
       // Door placement mode: left-click places a door of the pending type
       if (this._placingDoorType && e.button !== 2) {
         const w = this._fpToWorld(sx, sy, floor);
-        const cl = this._clampToFloor(floor, w.x, w.y);
+        const snd = (v) => (typeof this._fpSnapVal === "function" ? this._fpSnapVal(v) : v);
+        const cl = this._clampToFloor(floor, snd(w.x), snd(w.y));
         const defaults = this._doorDefaults();
         this._fpPushUndo();
         const nid = "door_" + Date.now();
@@ -364,7 +366,9 @@ export const FloorplanCanvasMixin = {
           const xvm = this._parseDisplayToMeters(xs), yvm = this._parseDisplayToMeters(ys);
           if (isNaN(xvm) || isNaN(yvm)) { alert("Invalid position (try 6' 11\" or 2.5)"); return; }
           this._fpPushUndo();
-          const cl = this._clampToFloor(floor, xvm, yvm);
+          const sxv = typeof this._fpSnapVal === "function" ? this._fpSnapVal(xvm) : xvm;
+          const syv = typeof this._fpSnapVal === "function" ? this._fpSnapVal(yvm) : yvm;
+          const cl = this._clampToFloor(floor, sxv, syv);
           pt.x = cl.x;
           pt.y = cl.y;
           this._saveFloorplan();
@@ -552,10 +556,11 @@ export const FloorplanCanvasMixin = {
         if (!floor || !this._fpClipboard) return;
         e.preventDefault();
         this._fpPushUndo();
+        const sn = (v) => (typeof this._fpSnapVal === "function" ? this._fpSnapVal(v) : v);
         if (this._fpClipboard.kind === "point") {
           const src = this._fpClipboard.data;
           const nid = "point_" + Date.now();
-          const cl = this._clampToFloor(floor, (src.x || 0) + 0.5, (src.y || 0) + 0.5);
+          const cl = this._clampToFloor(floor, sn((src.x || 0) + 0.5), sn((src.y || 0) + 0.5));
           floor.points.push({ id: nid, x: cl.x, y: cl.y, label: "" });
           this._selectedPointId = nid;
         } else if (this._fpClipboard.kind === "wall") {
@@ -563,9 +568,9 @@ export const FloorplanCanvasMixin = {
           // Paste wall requires its points; duplicate points too with offset
           const p1 = floor.points.find((p) => p.id === src.p1), p2 = floor.points.find((p) => p.id === src.p2);
           if (p1 && p2) {
-            const n1 = "point_" + Date.now(), n2 = "point_" + (Date.now() + 1);
-            const c1 = this._clampToFloor(floor, p1.x + 0.5, p1.y + 0.5);
-            const c2 = this._clampToFloor(floor, p2.x + 0.5, p2.y + 0.5);
+          const n1 = "point_" + Date.now(), n2 = "point_" + (Date.now() + 1);
+          const c1 = this._clampToFloor(floor, sn(p1.x + 0.5), sn(p1.y + 0.5));
+          const c2 = this._clampToFloor(floor, sn(p2.x + 0.5), sn(p2.y + 0.5));
             floor.points.push({ id: n1, x: c1.x, y: c1.y, label: "" });
             floor.points.push({ id: n2, x: c2.x, y: c2.y, label: "" });
             floor.walls.push({ id: "wall_" + Date.now(), p1: n1, p2: n2 });
@@ -573,14 +578,14 @@ export const FloorplanCanvasMixin = {
         } else if (this._fpClipboard.kind === "door") {
           const src = this._fpClipboard.data;
           const nid = "door_" + Date.now();
-          const cl = this._clampToFloor(floor, (parseFloat(src.x) || 0) + 0.5, (parseFloat(src.y) || 0) + 0.5);
+          const cl = this._clampToFloor(floor, sn((parseFloat(src.x) || 0) + 0.5), sn((parseFloat(src.y) || 0) + 0.5));
           floor.doors = floor.doors || [];
           floor.doors.push({ id: nid, type: src.type || "Door", x: cl.x, y: cl.y, rotation: parseFloat(src.rotation) || 0, width: parseFloat(src.width) || 0.9, swing: src.swing || "right" });
           this._selectedDoorId = nid;
         } else if (this._fpClipboard.kind === "window") {
           const src = this._fpClipboard.data;
           const nid = "window_" + Date.now();
-          const cl = this._clampToFloor(floor, (parseFloat(src.x) || 0) + 0.5, (parseFloat(src.y) || 0) + 0.5);
+          const cl = this._clampToFloor(floor, sn((parseFloat(src.x) || 0) + 0.5), sn((parseFloat(src.y) || 0) + 0.5));
           floor.windows = floor.windows || [];
           floor.windows.push({ id: nid, x: cl.x, y: cl.y, rotation: parseFloat(src.rotation) || 0, width: parseFloat(src.width) || 1.2, height: parseFloat(src.height) || 1.2, height_from_floor: parseFloat(src.height_from_floor) || 0.9 });
           this._selectedWindowId = nid;

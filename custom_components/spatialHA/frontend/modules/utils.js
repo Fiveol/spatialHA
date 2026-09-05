@@ -84,6 +84,13 @@ export const UtilsMixin = {
       });
     },
 
+    _fpSnapVal(v) {
+      if (this._fpSnapOn === false) return v;
+      const step = this._parseDisplayToMeters(this._fpSnapStep || "0.1");
+      if (!step || isNaN(step) || step <= 0) return v;
+      return Math.round(v / step) * step;
+    },
+
     _saveFloorplanSoon() {
       if (this._saveFpTimer) clearTimeout(this._saveFpTimer);
       this._saveFpTimer = setTimeout(() => {

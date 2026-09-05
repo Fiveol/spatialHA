@@ -59,7 +59,8 @@ export const GpsMixin = {
     if (!this._gpsData || !this._gpsData.entities || this._gpsData.entities.length === 0) {
       return `<p>No Device Tracker entities found.</p><p><button id="gps-retry">Refresh</button></p>`;
     }
-    const entities = this._gpsData.entities;
+    const _gfq = (this._gpsFilter || "").trim().toLowerCase();
+    const entities = (this._gpsData.entities || []).filter((e) => !_gfq || [e.entity_id, e.name || "", e.friendly_name || "", e.state || ""].join(" ").toLowerCase().includes(_gfq));
     let rows = entities.map(e => `
       <tr>
         <td><code>${this._esc(e.entity_id)}</code></td>
@@ -71,7 +72,7 @@ export const GpsMixin = {
       </tr>`).join("");
     return `
       <div style="overflow:auto">
-        <p><em>${entities.length} entities.</em> <button id="gps-refresh">Refresh</button></p>
+        <p><input id="gps-filter" type="search" placeholder="Filter" value="${this._esc(this._gpsFilter || "")}" style="max-width:220px"> <em>${entities.length} entities.</em> <button id="gps-refresh">Refresh</button></p>
         <table>
           <thead><tr><th>Entity ID</th><th>Name</th><th>State</th><th>Source</th><th>Location</th><th>Icon</th></tr></thead>
           <tbody>${rows}</tbody>

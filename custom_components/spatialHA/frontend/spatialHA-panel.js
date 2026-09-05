@@ -4,7 +4,7 @@
  * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
 if (!customElements.get("spatialHA-panel")) {
-const SPATIALHA_MOD_VERSION = "0.9.1.1";
+const SPATIALHA_MOD_VERSION = "0.9.1.2";
 function spatialHAModUrl(name) {
   return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
 }
@@ -24,6 +24,7 @@ class SpatialHAPanel extends HTMLElement {
     this._bleError = null;
     this._bleData = null;
     this._bleUnsub = null;
+    this._bleFilter = "";
     // Settings state
     this._settings = null;
     this._settingsLoading = false;
@@ -43,6 +44,7 @@ class SpatialHAPanel extends HTMLElement {
     this._gpsLoading = false;
     this._gpsError = null;
     this._gpsUnsub = null;
+    this._gpsFilter = "";
     // Floorplan state
     this._floorplan = null;
     this._floorplanLoading = false;
@@ -70,6 +72,8 @@ class SpatialHAPanel extends HTMLElement {
     this._floorplanOffset = {x: 400, y: 300};
     this._floorplanPanning = false;
     this._floorplanPanStart = null;
+    this._fpSnapOn = true;
+    this._fpSnapStep = "0.1";
     // Home 3D view state
     this._homeView = "iso";
     this._homeYawOff = 0;
@@ -409,6 +413,11 @@ class SpatialHAPanel extends HTMLElement {
         this._ensureBleSubscription();
       });
     }
+    const bleFilter = this.shadowRoot.getElementById("ble-filter");
+    if (bleFilter) {
+      bleFilter.addEventListener("input", (e) => { this._bleFilter = e.target.value; this._render(); });
+      bleFilter.addEventListener("search", (e) => { this._bleFilter = e.target.value; this._render(); });
+    }
     const settingsRetry = this.shadowRoot.getElementById("settings-retry");
     if (settingsRetry) {
       settingsRetry.addEventListener("click", () => this._fetchSettings());
@@ -421,6 +430,7 @@ class SpatialHAPanel extends HTMLElement {
     if (intervalInput) {
       intervalInput.addEventListener("input", (e) => { this._pendingInterval = e.target.value; });
       intervalInput.addEventListener("change", (e) => { this._pendingInterval = e.target.value; });
+      intervalInput.addEventListener("keydown", (e) => { if (e.key === "Enter") this._saveSettings(); });
     }
     // Targets
     const addBtn = this.shadowRoot.getElementById("target-add");
@@ -489,6 +499,11 @@ class SpatialHAPanel extends HTMLElement {
     if (gpsRetry) gpsRetry.addEventListener("click", () => { if (this._gpsUnsub) { try { this._gpsUnsub(); } catch(e){} this._gpsUnsub=null; } this._gpsData=null; this._ensureGpsSubscription(); });
     const gpsRefresh = this.shadowRoot.getElementById("gps-refresh");
     if (gpsRefresh) gpsRefresh.addEventListener("click", () => { this._fetchGpsOnce(); });
+    const gpsFilter = this.shadowRoot.getElementById("gps-filter");
+    if (gpsFilter) {
+      gpsFilter.addEventListener("input", (e) => { this._gpsFilter = e.target.value; this._render(); });
+      gpsFilter.addEventListener("search", (e) => { this._gpsFilter = e.target.value; this._render(); });
+    }
     // Floorplan bindings
     const fpCanvas = this.shadowRoot.getElementById("floorplan-canvas");
     if (fpCanvas) {
@@ -806,6 +821,13 @@ class SpatialHAPanel extends HTMLElement {
       f.points.push({ id: nid, x: 0, y: 0, label: "" });
       this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
     });
+    const snapBox = this.shadowRoot.getElementById("fp-snap");
+    if (snapBox) snapBox.addEventListener("change", (e) => { this._fpSnapOn = e.target.checked; });
+    const snapStep = this.shadowRoot.getElementById("fp-snap-step");
+    if (snapStep) {
+      snapStep.addEventListener("input", (e) => { this._fpSnapStep = e.target.value; });
+      snapStep.addEventListener("change", (e) => { this._fpSnapStep = e.target.value; });
+    }
     this.shadowRoot.querySelectorAll("[data-del-point]").forEach((b) => b.addEventListener("click", () => {
       const f = this._getActiveFloor(); if (!f) return;
       this._fpPushUndo();
