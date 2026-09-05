@@ -152,6 +152,19 @@ export const FloorplanCanvasMixin = {
           ctx.beginPath(); ctx.arc(s.x, s.y, 11, 0, Math.PI * 2); ctx.stroke();
         }
       }
+      // Estimated device positions (rough triangulation, needs 3+ scanners)
+      if (this._showPositions !== false) {
+        const posList = ((this._bleData && this._bleData.positions) || []).filter((p) => p.floor_id === floor.id);
+        for (const pos of posList) {
+          const s = this._worldToScreen(pos.x, pos.y, floor);
+          const rPx = Math.max(6, Math.min(60, (pos.error || 2) * this._floorplanScale));
+          ctx.strokeStyle = "rgba(245,158,11,0.5)"; ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(s.x, s.y, rPx, 0, Math.PI * 2); ctx.stroke();
+          ctx.fillStyle = "#f59e0b";
+          ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = "#0b0e13"; ctx.lineWidth = 1.5; ctx.stroke();
+        }
+      }
       // BLE receivers (placement markers only for now)
       for (const rx of (floor.receivers || [])) {
         const s = this._worldToScreen(rx.x, rx.y, floor);

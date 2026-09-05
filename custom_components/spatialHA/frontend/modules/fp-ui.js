@@ -79,6 +79,7 @@ export const FloorplanUiMixin = {
             <button data-fp-mode="2d" style="padding:6px 12px; border:1px solid #444; border-radius:4px; background:${(this._fpMode || "2d") === "2d" ? "#03a9f4" : "#1e2228"}; color:${(this._fpMode || "2d") === "2d" ? "white" : "#cfd6df"}; cursor:pointer;">2D</button>
             <button data-fp-mode="3d" style="padding:6px 12px; border:1px solid #444; border-radius:4px; background:${this._fpMode === "3d" ? "#03a9f4" : "#1e2228"}; color:${this._fpMode === "3d" ? "white" : "#cfd6df"}; cursor:pointer;">3D</button>
             <span style="flex:1"></span>
+            <label style="align-self:center;"><input id="fp-positions" type="checkbox" ${this._showPositions === false ? "" : "checked"}> Positions</label>
             <span data-fp-views style="display:${this._fpMode === "3d" ? "flex" : "none"}; gap:4px;">
               <button data-fp-view="iso">Isometric</button>
               <button data-fp-view="top">Top Down</button>

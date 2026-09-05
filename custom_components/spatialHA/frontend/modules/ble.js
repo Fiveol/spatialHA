@@ -107,6 +107,13 @@ export const BleMixin = {
       // Add iBeacon column if any device has iBeacon
       const hasIbeacon = devices.some(d => d.ibeacon);
       if (hasIbeacon) headerCols += `<th>iBeacon UUID</th>`;
+      // Add position column if any device was triangulated
+      const floorsById = {};
+      try {
+        for (const f of ((this._floorplan && this._floorplan.floors) || [])) floorsById[f.id] = f.name || f.id;
+      } catch (e) {}
+      const hasPos = devices.some(d => d.position);
+      if (hasPos) headerCols += `<th>Position</th>`;
       scanners.forEach(sc => {
         const label = this._esc(sc.name || sc.source);
         headerCols += `<th>${label}<br><small>${this._esc(sc.source)}</small></th>`;
@@ -116,6 +123,12 @@ export const BleMixin = {
         if (hasIbeacon) {
           const ib = dev.ibeacon ? `${this._esc(dev.ibeacon.uuid)}<br><small>${dev.ibeacon.major}/${dev.ibeacon.minor}</small>` : "—";
           cols += `<td>${ib}</td>`;
+        }
+        if (hasPos) {
+          const pos = dev.position;
+          cols += pos
+            ? `<td>${this._esc(floorsById[pos.floor_id] || pos.floor_id)} (${Number(pos.x).toFixed(1)}, ${Number(pos.y).toFixed(1)})</td>`
+            : `<td style="color: var(--secondary-text-color, #999)">N/A</td>`;
         }
         const per = dev.per_scanner || {};
         scanners.forEach(sc => {

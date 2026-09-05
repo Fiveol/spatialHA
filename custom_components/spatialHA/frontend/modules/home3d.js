@@ -224,6 +224,15 @@ export const Home3DMixin = {
         lines.push({ a: [rx.x, rx.y, z0 + 0.25], b: [rx.x, rx.y, z0 + 0.9], stroke: rxFill, width: 3 });
         dots.push({ p: [rx.x, rx.y, z0 + 0.9], fill: rxFill });
       }
+      // Estimated device positions (rough triangulation)
+      if (typeof this === "undefined" || this._showPositions !== false) {
+        const allPos = (typeof this !== "undefined" && this._bleData && this._bleData.positions) || [];
+        for (const pos of allPos) {
+          if (pos.floor_id !== floor.id) continue;
+          lines.push({ a: [pos.x, pos.y, z0 + 0.25], b: [pos.x, pos.y, z0 + 0.6], stroke: "#f59e0b", width: 2 });
+          dots.push({ p: [pos.x, pos.y, z0 + 0.6], fill: "#f59e0b" });
+        }
+      }
       // Bluetooth scanners as purple posts (placement only for now)
       for (const sc of (floor.scanners || [])) {
         const scFill = (typeof this !== "undefined" && this._selectedScannerId === sc.id) ? "#ff9800" : "#c084fc";

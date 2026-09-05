@@ -4,7 +4,7 @@
  * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
 if (!customElements.get("spatialHA-panel")) {
-const SPATIALHA_MOD_VERSION = "0.9.1.5";
+const SPATIALHA_MOD_VERSION = "0.9.1.6";
 function spatialHAModUrl(name) {
   return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
 }
@@ -25,6 +25,7 @@ class SpatialHAPanel extends HTMLElement {
     this._bleData = null;
     this._bleUnsub = null;
     this._bleFilter = "";
+    this._showPositions = true;
     // Settings state
     this._settings = null;
     this._settingsLoading = false;
@@ -549,6 +550,12 @@ class SpatialHAPanel extends HTMLElement {
         else this._renderFloorplanCanvas();
       }, 0);
     }));
+    const posToggle = this.shadowRoot.getElementById("fp-positions");
+    if (posToggle) posToggle.addEventListener("change", (e) => {
+      this._showPositions = e.target.checked;
+      this._fpRedraw();
+      if (typeof this._renderHomeIsoCanvas === "function") this._renderHomeIsoCanvas();
+    });
     this.shadowRoot.querySelectorAll("[data-fp-view]").forEach((b) => b.addEventListener("click", () => {
       if (typeof this._fpSetView === "function") this._fpSetView(b.getAttribute("data-fp-view"));
       else { this._fpView = b.getAttribute("data-fp-view"); this._render(); }

@@ -35,6 +35,7 @@ try:
         "device_tracker",
         "floorplan",
         "gps",
+        "positioning",
         "storage",
         "targets",
         "websocket",

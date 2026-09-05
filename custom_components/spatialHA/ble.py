@@ -130,7 +130,7 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
         from homeassistant.components import bluetooth as bt
     except Exception as err:  # noqa: BLE001
         LOGGER.debug("Bluetooth not available: %s", err)
-        return {"scanners": [], "sightings": [], "devices": [], "error": "bluetooth not available"}
+        return {"scanners": [], "sightings": [], "devices": [], "positions": [], "error": "bluetooth not available"}
 
     try:
         # Get scanners
@@ -430,6 +430,21 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
 
         devices = list(devices_map.values())
 
+        # Rough trilateration from placed floor scanners (needs 3+ per floor)
+        positions: list[dict] = []
+        try:
+            from .positioning import estimate_positions
+
+            floorplan = hass.data.get(DOMAIN, {}).get("floorplan") if hasattr(hass, "data") else None
+            positions = estimate_positions({"devices": devices}, floorplan)
+            by_addr = {p["address"]: p for p in positions}
+            for dev in devices:
+                pos = by_addr.get(str(dev.get("address", "")).upper())
+                if pos:
+                    dev["position"] = pos
+        except Exception:  # noqa: BLE001
+            positions = []
+
         # If no sightings but we have devices, create sightings from devices
         if not sightings and devices:
             for dev in devices:
@@ -446,7 +461,7 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
                         }
                     )
 
-        return {"scanners": scanners, "sightings": sightings, "devices": devices}
+        return {"scanners": scanners, "sightings": sightings, "devices": devices, "positions": positions}
     except Exception as err:  # noqa: BLE001
         LOGGER.error("Failed to get BLE data: %s", err)
-        return {"scanners": [], "sightings": [], "devices": [], "error": str(err)}
+        return {"scanners": [], "sightings": [], "devices": [], "positions": [], "error": str(err)}
