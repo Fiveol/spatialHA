@@ -7,7 +7,7 @@
 // tag here. A mixed-case guard never matches and lets a second execution
 // slip through to customElements.define, which throws "already been used".
 if (!customElements.get("spatialha-panel")) {
-const SPATIALHA_MOD_VERSION = "0.9.1.10";
+const SPATIALHA_MOD_VERSION = "0.9.1.11";
 function spatialHAModUrl(name) {
   return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
 }
@@ -357,7 +357,7 @@ class SpatialHAPanel extends HTMLElement {
       settingsInner = `
         <div class="field">
           <label for="interval-input">Update Interval (seconds, default 1)</label>
-          <input id="interval-input" type="number" min="0.5" max="3600" step="0.5" value="${this._esc(this._pendingInterval)}" />
+          <input id="interval-input" type="number" min="0.01" max="3600" step="0.01" value="${this._esc(this._pendingInterval)}" />
           <button id="settings-save" ${this._settingsSaving ? "disabled" : ""}>${this._settingsSaving ? "Saving…" : "Save"}</button>
         </div>
         <p><small>Applies to background updates.</small></p>

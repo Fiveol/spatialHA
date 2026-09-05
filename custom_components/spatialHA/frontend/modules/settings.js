@@ -76,8 +76,8 @@ export const SettingsMixin = {
     async _saveSettings() {
       if (!this._hass || this._settingsSaving) return;
       const val = parseFloat(this._pendingInterval);
-      if (isNaN(val) || val < 0.5 || val > 3600) {
-        this._settingsError = "Update Interval must be between 0.5 and 3600 seconds";
+      if (isNaN(val) || val < 0.01 || val > 3600) {
+        this._settingsError = "Update Interval must be between 0.01 and 3600 seconds";
         this._render();
         return;
       }

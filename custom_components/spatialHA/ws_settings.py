@@ -55,8 +55,8 @@ async def handle_settings_set(
         if "update_interval" in msg:
             try:
                 iv = float(msg["update_interval"])
-                if iv < 0.5:
-                    iv = 0.5
+                if iv < 0.01:
+                    iv = 0.01
                 if iv > 3600:
                     iv = 3600
                 current["update_interval"] = iv
