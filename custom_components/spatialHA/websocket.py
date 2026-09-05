@@ -253,19 +253,63 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
                 scanners_raw = []
 
         scanners: list[dict] = []
+        # Try to get device registry for friendly scanner names
+        dev_reg = None
+        try:
+            from homeassistant.helpers import device_registry as dr
+
+            dev_reg = dr.async_get(hass)
+        except Exception:  # noqa: BLE001
+            dev_reg = None
+
         for sc in scanners_raw:
             try:
                 source = getattr(sc, "source", None) or getattr(sc, "adapter", None) or str(sc)
-                # Try to get human name
+                # Try to get human name via device registry first (for Bluetooth proxies)
                 name = getattr(sc, "name", None)
+                if not name and dev_reg:
+                    try:
+                        # Find device by bluetooth address
+                        for device in dev_reg.devices.values():
+                            for conn in device.connections:
+                                if conn[0] == "bluetooth" and conn[1].lower() == str(source).lower():
+                                    if device.name:
+                                        name = device.name
+                                        break
+                            if name:
+                                break
+                            # Also check via identifiers
+                            for ident in device.identifiers:
+                                if ident[1].lower() == str(source).lower():
+                                    if device.name:
+                                        name = device.name
+                                        break
+                            if name:
+                                break
+                    except Exception:  # noqa: BLE001
+                        pass
                 if not name:
                     try:
-                        # Try adapter_human_name
                         from bluetooth_adapters import adapter_human_name
 
                         adapter = getattr(sc, "adapter", source)
                         address = getattr(sc, "source", source)
                         name = adapter_human_name(adapter, address)
+                        # Try to get area name as well
+                        if dev_reg:
+                            try:
+                                for device in dev_reg.devices.values():
+                                    for conn in device.connections:
+                                        if conn[1].lower() == str(source).lower() and device.area_id:
+                                            from homeassistant.helpers import area_registry as ar
+
+                                            area_reg = ar.async_get(hass)
+                                            area = area_reg.async_get_area(device.area_id)
+                                            if area and area.name:
+                                                name = f"{name} ({area.name})"
+                                                break
+                            except Exception:
+                                pass
                     except Exception:  # noqa: BLE001
                         name = source
                 adapter = getattr(sc, "adapter", source)
@@ -370,8 +414,9 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
                             if not sc_source:
                                 sc_source = getattr(sd, "source", source)
                             sc_source = str(sc_source) if sc_source else str(source)
-                            # RSSI from ble_device or advertisement
+                            # RSSI from ble_device or advertisement with staleness check
                             sd_rssi = None
+                            sd_time = None
                             try:
                                 ble_dev = getattr(sd, "ble_device", None)
                                 if ble_dev and hasattr(ble_dev, "rssi"):
@@ -381,8 +426,48 @@ def _get_ble_data(hass: HomeAssistant) -> dict:
                                     sd_rssi = adv.rssi
                                 if sd_rssi is None:
                                     sd_rssi = rssi
+                                # Get time for staleness check (monotonic or wall time)
+                                if adv and hasattr(adv, "time"):
+                                    sd_time = getattr(adv, "time", None)
+                                elif ble_dev and hasattr(ble_dev, "details"):
+                                    # Try to get time from details
+                                    sd_time = getattr(ble_dev, "time", None)
+                                # Fallback to info.time
+                                if sd_time is None:
+                                    sd_time = getattr(info, "time", None)
                             except Exception:  # noqa: BLE001
                                 sd_rssi = rssi
+
+                            # Staleness filter: only include if seen within last 180s or update_interval*3
+                            # Use monotonic time if available, else wall time
+                            try:
+                                import time as _time
+
+                                now_monotonic = None
+                                try:
+                                    from bluetooth_data_tools import monotonic_time_coarse
+
+                                    now_monotonic = monotonic_time_coarse()
+                                except Exception:
+                                    now_monotonic = _time.monotonic()
+                                # sd_time is monotonic if from advertisement, else wall time
+                                # If sd_time looks like wall time (>1e9), compare with time.time()
+                                # If it looks like monotonic (<1e9), compare with monotonic
+                                is_stale = False
+                                if sd_time is not None:
+                                    try:
+                                        # Heuristic: monotonic is < 1e7, wall is >1e9
+                                        if sd_time > 1e9:  # wall time
+                                            is_stale = (_time.time() - float(sd_time)) > 180
+                                        else:  # monotonic
+                                            is_stale = (now_monotonic - float(sd_time)) > 180
+                                    except Exception:
+                                        is_stale = False
+                                # If stale, skip this scanner for this device (will be N/A)
+                                if is_stale:
+                                    continue
+                            except Exception:  # noqa: BLE001
+                                pass
 
                             per_scanner[str(sc_source)] = sd_rssi
                             sightings.append(

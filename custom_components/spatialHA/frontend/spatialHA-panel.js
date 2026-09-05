@@ -32,7 +32,12 @@ class SpatialHAPanel extends HTMLElement {
     this._targetsUnsub = null;
     this._editingTarget = null; // target being edited, or null for new
     this._showAddForm = false;
-    this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [] };
+    this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [], gps_entities: [] };
+    // GPS state
+    this._gpsData = null;
+    this._gpsLoading = false;
+    this._gpsError = null;
+    this._gpsUnsub = null;
   }
 
   set hass(hass) {
@@ -43,11 +48,13 @@ class SpatialHAPanel extends HTMLElement {
       if (this._activeTab === "settings" && !this._settings) this._fetchSettings();
       if (this._activeTab === "ble") this._ensureBleSubscription();
       if (this._activeTab === "targets") this._ensureTargetsSubscription();
+      if (this._activeTab === "gps") this._ensureGpsSubscription();
     } else {
       if (this._activeTab === "about" && !this._hasFetchedVersion && !this._loadingVersion) this._fetchVersion();
       if (this._activeTab === "ble" && !this._bleUnsub) this._ensureBleSubscription();
       if (this._activeTab === "settings" && !this._settings && !this._settingsLoading) this._fetchSettings();
       if (this._activeTab === "targets" && !this._targetsUnsub) this._ensureTargetsSubscription();
+      if (this._activeTab === "gps" && !this._gpsUnsub) this._ensureGpsSubscription();
     }
   }
 
@@ -58,6 +65,7 @@ class SpatialHAPanel extends HTMLElement {
   disconnectedCallback() {
     if (this._bleUnsub) { try { this._bleUnsub(); } catch(e){} this._bleUnsub = null; }
     if (this._targetsUnsub) { try { this._targetsUnsub(); } catch(e){} this._targetsUnsub = null; }
+    if (this._gpsUnsub) { try { this._gpsUnsub(); } catch(e){} this._gpsUnsub = null; }
   }
 
   _switchTab(tab) {
@@ -68,6 +76,7 @@ class SpatialHAPanel extends HTMLElement {
     if (tab === "settings" && !this._settings && this._hass && !this._settingsLoading) this._fetchSettings();
     if (tab === "ble" && this._hass) this._ensureBleSubscription();
     if (tab === "targets" && this._hass) this._ensureTargetsSubscription();
+    if (tab === "gps" && this._hass) this._ensureGpsSubscription();
   }
 
   _switchBleSubTab(sub) {
@@ -188,6 +197,87 @@ class SpatialHAPanel extends HTMLElement {
     }
   }
 
+  _ensureGpsSubscription() {
+    if (!this._hass || !this._hass.connection || this._gpsUnsub) return;
+    this._gpsLoading = true;
+    this._render();
+    try {
+      const sub = this._hass.connection.subscribeMessage(
+        (msg) => {
+          const data = msg.data || msg;
+          const payload = data.data || data;
+          if (payload && (payload.entities || payload.count !== undefined)) {
+            this._gpsData = payload;
+            this._gpsLoading = false;
+            this._gpsError = null;
+            this._render();
+          }
+        },
+        { type: "spatialHA/gps/subscribe" }
+      );
+      if (sub && typeof sub.then === "function") {
+        sub.then((unsub) => {
+          this._gpsUnsub = unsub;
+          this._gpsLoading = false;
+          this._fetchGpsOnce();
+        }).catch(() => {
+          this._gpsLoading = false;
+          this._fetchGpsOnce();
+        });
+      } else if (typeof sub === "function") {
+        this._gpsUnsub = sub;
+        this._gpsLoading = false;
+      } else {
+        this._gpsLoading = false;
+        this._fetchGpsOnce();
+      }
+    } catch (e) {
+      this._gpsLoading = false;
+      this._fetchGpsOnce();
+    }
+  }
+
+  async _fetchGpsOnce() {
+    if (!this._hass) return;
+    try {
+      const data = await this._hass.callWS({ type: "spatialHA/gps/list" });
+      this._gpsData = data;
+      this._gpsError = null;
+    } catch (err) {
+      this._gpsError = err.message || String(err);
+    } finally {
+      this._gpsLoading = false;
+      this._render();
+    }
+  }
+
+  _renderGps() {
+    if (this._gpsLoading) return `<p class="loading">Loading GPS entities…</p>`;
+    if (this._gpsError) return `<p class="error">Error: ${this._esc(this._gpsError)}</p><p><button id="gps-retry">Retry</button></p>`;
+    if (!this._gpsData || !this._gpsData.entities || this._gpsData.entities.length === 0) {
+      return `<p>No Device Tracker entities found. Ensure GPS trackers are configured.</p><p><button id="gps-retry">Refresh</button></p>`;
+    }
+    const entities = this._gpsData.entities;
+    let rows = entities.map(e => `
+      <tr>
+        <td><code>${this._esc(e.entity_id)}</code></td>
+        <td>${this._esc(e.name || e.friendly_name || "")}</td>
+        <td style="color:${e.state==="home"?"var(--success-color, green)":"var(--error-color, #db4437)"};font-weight:600">${this._esc(e.state)}</td>
+        <td>${this._esc(e.source_type || "")}</td>
+        <td>${e.latitude!=null ? this._esc(String(e.latitude)).slice(0,7)+", "+this._esc(String(e.longitude)).slice(0,7) : "N/A"}</td>
+        <td><ha-icon icon="${this._esc(e.icon)}"></ha-icon> <code>${this._esc(e.icon)}</code></td>
+      </tr>`).join("");
+    return `
+      <div style="overflow:auto">
+        <p><em>${entities.length} Device Tracker entities. Add to Targets alongside BLE.</em> <button id="gps-refresh">Refresh</button></p>
+        <table>
+          <thead><tr><th>Entity ID</th><th>Name</th><th>State</th><th>Source</th><th>Location</th><th>Icon</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
   _ensureTargetsSubscription() {
     if (!this._hass || !this._hass.connection || this._targetsUnsub) return;
     this._targetsLoading = true;
@@ -254,6 +344,7 @@ class SpatialHAPanel extends HTMLElement {
         target_type: this._targetForm.type,
         icon: this._targetForm.icon,
         ble_devices: this._targetForm.ble_devices,
+        gps_entities: this._targetForm.gps_entities || [],
       });
       this._showAddForm = false;
       this._editingTarget = null;
@@ -275,6 +366,7 @@ class SpatialHAPanel extends HTMLElement {
         target_type: this._targetForm.type,
         icon: this._targetForm.icon,
         ble_devices: this._targetForm.ble_devices,
+        gps_entities: this._targetForm.gps_entities || [],
       });
       this._editingTarget = null;
       this._showAddForm = false;
@@ -303,6 +395,7 @@ class SpatialHAPanel extends HTMLElement {
       type: target.type || "Other",
       icon: target.icon || (target.type === "Person" ? "mdi:account" : "mdi:help-circle"),
       ble_devices: [...(target.ble_devices || [])],
+      gps_entities: [...(target.gps_entities || [])],
     };
     this._render();
   }
@@ -310,14 +403,14 @@ class SpatialHAPanel extends HTMLElement {
   _startAdd() {
     this._editingTarget = null;
     this._showAddForm = true;
-    this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [] };
+    this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [], gps_entities: [] };
     this._render();
   }
 
   _cancelForm() {
     this._showAddForm = false;
     this._editingTarget = null;
-    this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [] };
+    this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [], gps_entities: [] };
     this._render();
   }
 
@@ -326,6 +419,13 @@ class SpatialHAPanel extends HTMLElement {
     const idx = this._targetForm.ble_devices.findIndex(a => String(a).toUpperCase() === upper);
     if (idx >= 0) this._targetForm.ble_devices.splice(idx, 1);
     else this._targetForm.ble_devices.push(upper);
+    this._render();
+  }
+
+  _toggleGpsEntity(entity_id) {
+    const idx = this._targetForm.gps_entities.indexOf(entity_id);
+    if (idx >= 0) this._targetForm.gps_entities.splice(idx, 1);
+    else this._targetForm.gps_entities.push(entity_id);
     this._render();
   }
 
@@ -430,9 +530,10 @@ class SpatialHAPanel extends HTMLElement {
     if (!this._targets || this._targets.length === 0) {
       listHtml = `<p>No targets yet. Add a Person or Other target and assign BLE devices.</p>`;
     } else {
-      listHtml = `<table><thead><tr><th>Name</th><th>Type</th><th>Icon</th><th>BLE Devices</th><th>State</th><th>Actions</th></tr></thead><tbody>`;
+      listHtml = `<table><thead><tr><th>Name</th><th>Type</th><th>Icon</th><th>BLE Devices</th><th>GPS Entities</th><th>State</th><th>Actions</th></tr></thead><tbody>`;
       this._targets.forEach(t => {
         const bleList = (t.ble_devices || []).map(a => `<code>${this._esc(a)}</code>`).join(", ") || "<em>none</em>";
+        const gpsList = (t.gps_entities || []).map(a => `<code>${this._esc(a)}</code>`).join(", ") || "<em>none</em>";
         const state = this._esc(t.state || "unknown");
         const stateColor = state === "home" ? "var(--success-color, green)" : "var(--error-color, #db4437)";
         listHtml += `<tr>
@@ -440,6 +541,7 @@ class SpatialHAPanel extends HTMLElement {
           <td>${this._esc(t.type)} </td>
           <td><ha-icon icon="${this._esc(t.icon)}"></ha-icon> <code>${this._esc(t.icon)}</code></td>
           <td>${bleList}</td>
+          <td>${gpsList}</td>
           <td style="color:${stateColor}; font-weight:600">${state}</td>
           <td><button data-edit="${this._esc(t.id)}">Edit</button> <button data-delete="${this._esc(t.id)}">Delete</button></td>
         </tr>`;
@@ -453,10 +555,8 @@ class SpatialHAPanel extends HTMLElement {
       // Available BLE devices for assignment
       let bleOptions = "";
       const available = (this._bleData && (this._bleData.devices || [])) || [];
-      // Also include sightings addresses that may not be in devices? Use devices
       const allAddrs = new Set();
       available.forEach(d => allAddrs.add(d.address));
-      // Also add any ble_devices already assigned that may not be in available
       (this._targetForm.ble_devices || []).forEach(a => allAddrs.add(a));
       if (allAddrs.size === 0) {
         bleOptions = `<p><em>No BLE devices discovered yet. Assign manually or wait for scanner.</em></p>`;
@@ -465,15 +565,31 @@ class SpatialHAPanel extends HTMLElement {
         allAddrs.forEach(addr => {
           const upper = String(addr).toUpperCase();
           const checked = this._targetForm.ble_devices.some(a => String(a).toUpperCase() === upper) ? "checked" : "";
-          // Find name
           let name = upper;
           const dev = available.find(d => String(d.address).toUpperCase() === upper);
           if (dev && dev.name) name = `${dev.name} (${upper})`;
           bleOptions += `<label style="display:block; margin:4px 0;"><input type="checkbox" data-ble-addr="${this._esc(upper)}" ${checked}> <code>${this._esc(upper)}</code> ${this._esc(name !== upper ? " - " + dev.name : "")}</label>`;
         });
         bleOptions += `</div>`;
-        // Also manual input
         bleOptions += `<p><small>Or add custom MAC/UUID:</small> <input id="ble-custom" placeholder="AA:BB:CC:DD:EE:FF" style="width:200px"> <button id="ble-add-custom">Add</button></p>`;
+      }
+      // GPS options
+      let gpsOptions = "";
+      const gpsAvailable = (this._gpsData && (this._gpsData.entities || [])) || [];
+      const allGps = new Set();
+      gpsAvailable.forEach(e => allGps.add(e.entity_id));
+      (this._targetForm.gps_entities || []).forEach(e => allGps.add(e));
+      if (allGps.size === 0) {
+        gpsOptions = `<p><em>No GPS Device Tracker entities found.</em></p>`;
+      } else {
+        gpsOptions = `<div style="max-height:180px; overflow:auto; border:1px solid var(--divider-color, #ccc); padding:8px; border-radius:6px;">`;
+        allGps.forEach(eid => {
+          const checked = this._targetForm.gps_entities.includes(eid) ? "checked" : "";
+          const ent = gpsAvailable.find(x => x.entity_id === eid);
+          const label = ent ? `${ent.name || ent.entity_id} (${ent.state})` : eid;
+          gpsOptions += `<label style="display:block; margin:4px 0;"><input type="checkbox" data-gps-entity="${this._esc(eid)}" ${checked}> <code>${this._esc(eid)}</code> ${this._esc(ent ? " - " + (ent.name || "") + " [" + ent.state + "]" : "")}</label>`;
+        });
+        gpsOptions += `</div>`;
       }
 
       formHtml = `
@@ -488,6 +604,7 @@ class SpatialHAPanel extends HTMLElement {
           </div>
           <div class="field"><label>Icon (mdi:*)</label><input id="target-icon" value="${this._esc(this._targetForm.icon)}" placeholder="mdi:account" /></div>
           <div class="field"><label>BLE Devices (one or many, state Home only if all seen; any Away => away)</label>${bleOptions}</div>
+          <div class="field"><label>GPS Entities (Device Tracker from HASS, also Home/Away)</label>${gpsOptions}</div>
           <p><button id="target-save">${isEdit ? "Update" : "Create"}</button> <button id="target-cancel">Cancel</button></p>
         </div>
       `;
@@ -631,6 +748,7 @@ class SpatialHAPanel extends HTMLElement {
     let mainInner = "";
     if (this._activeTab === "home") mainInner = homeContent;
     else if (this._activeTab === "ble") mainInner = bleContent;
+    else if (this._activeTab === "gps") mainInner = this._renderGps();
     else if (this._activeTab === "targets") mainInner = targetsContent;
     else if (this._activeTab === "settings") mainInner = settingsContent;
     else if (this._activeTab === "about") mainInner = aboutContent;
@@ -641,6 +759,7 @@ class SpatialHAPanel extends HTMLElement {
         <div class="tabs" role="tablist">
           <button role="tab" aria-selected="${this._activeTab === "home"}" data-tab="home" class="${this._activeTab === "home" ? "active" : ""}">Home</button>
           <button role="tab" aria-selected="${this._activeTab === "ble"}" data-tab="ble" class="${this._activeTab === "ble" ? "active" : ""}">BLE</button>
+          <button role="tab" aria-selected="${this._activeTab === "gps"}" data-tab="gps" class="${this._activeTab === "gps" ? "active" : ""}">GPS</button>
           <button role="tab" aria-selected="${this._activeTab === "targets"}" data-tab="targets" class="${this._activeTab === "targets" ? "active" : ""}">Targets</button>
           <button role="tab" aria-selected="${this._activeTab === "settings"}" data-tab="settings" class="${this._activeTab === "settings" ? "active" : ""}">Settings</button>
           <button role="tab" aria-selected="${this._activeTab === "about"}" data-tab="about" class="${this._activeTab === "about" ? "active" : ""}">About</button>
@@ -743,6 +862,34 @@ class SpatialHAPanel extends HTMLElement {
     });
     const iconInput = this.shadowRoot.getElementById("target-icon");
     if (iconInput) iconInput.addEventListener("input", e => { this._targetForm.icon = e.target.value; });
+    // GPS checkboxes in Targets form
+    this.shadowRoot.querySelectorAll("[data-gps-entity]").forEach(cb => {
+      cb.addEventListener("change", () => {
+        const eid = cb.getAttribute("data-gps-entity");
+        this._toggleGpsEntity(eid);
+      });
+    });
+    // GPS tab buttons
+    const gpsRetry = this.shadowRoot.getElementById("gps-retry");
+    if (gpsRetry) gpsRetry.addEventListener("click", () => { if (this._gpsUnsub) { try { this._gpsUnsub(); } catch(e){} this._gpsUnsub=null; } this._gpsData=null; this._ensureGpsSubscription(); });
+    const gpsRefresh = this.shadowRoot.getElementById("gps-refresh");
+    if (gpsRefresh) gpsRefresh.addEventListener("click", () => { this._fetchGpsOnce(); });
+  }
+
+  _renderGps() {
+    if (this._gpsLoading) return `<p class="loading">Loading GPS entities…</p>`;
+    if (this._gpsError) return `<p class="error">Error: ${this._esc(this._gpsError)}</p><p><button id="gps-retry">Retry</button></p>`;
+    if (!this._gpsData || !this._gpsData.entities || this._gpsData.entities.length===0) return `<p>No Device Tracker entities found.</p><p><button id="gps-retry">Refresh</button></p>`;
+    const entities = this._gpsData.entities;
+    let rows = entities.map(e => `<tr><td><code>${this._esc(e.entity_id)}</code></td><td>${this._esc(e.name)}</td><td style="color:${e.state==="home"?"var(--success-color, green)":"var(--error-color, #db4437)"};font-weight:600">${this._esc(e.state)}</td><td>${e.latitude!=null?this._esc(String(e.latitude)).slice(0,7)+", "+this._esc(String(e.longitude)).slice(0,7):"N/A"}</td><td><ha-icon icon="${this._esc(e.icon)}"></ha-icon></td></tr>`).join("");
+    return `<div class="card"><h2>GPS</h2><p>Device Tracker entities from HASS. Add them to Targets alongside BLE devices.</p><div style="overflow:auto"><table><thead><tr><th>Entity ID</th><th>Name</th><th>State</th><th>Location</th><th>Icon</th></tr></thead><tbody>${rows}</tbody></table></div><p><button id="gps-refresh">Refresh</button></p></div>`;
+  }
+
+  _toggleGpsEntity(eid) {
+    const idx = this._targetForm.gps_entities.indexOf(eid);
+    if (idx >=0) this._targetForm.gps_entities.splice(idx,1);
+    else this._targetForm.gps_entities.push(eid);
+    this._render();
   }
 }
 
