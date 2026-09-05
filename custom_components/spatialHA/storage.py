@@ -13,6 +13,7 @@ STORAGE_KEY_BLE_DATA = "spatialHA/ble_data"
 STORAGE_KEY_BLE_SIGHTINGS = "spatialHA/sightings"
 STORAGE_KEY_TARGETS = "spatialHA/targets"
 STORAGE_KEY_FLOORPLAN = "spatialHA/floorplan"
+STORAGE_KEY_TRACKED = "spatialHA/tracked"
 STORAGE_VERSION = 1
 DEFAULT_UPDATE_INTERVAL = 1.0
 
@@ -23,6 +24,7 @@ LEGACY_STORAGE_KEYS = {
     "spatialHA/sightings": "spatialHA.sightings",
     "spatialHA/targets": "spatialHA.targets",
     "spatialHA/floorplan": "spatialHA.floorplan",
+    "spatialHA/tracked": "spatialHA.tracked",
 }
 
 
@@ -44,6 +46,11 @@ def _get_ble_sightings_store(hass: HomeAssistant) -> Store:
 def _get_targets_store(hass: HomeAssistant) -> Store:
     """Get Store for spatialHA/targets."""
     return Store(hass, STORAGE_VERSION, STORAGE_KEY_TARGETS)
+
+
+def _get_tracked_store(hass: HomeAssistant) -> Store:
+    """Get Store for spatialHA/tracked (user-tracked BLE addresses)."""
+    return Store(hass, STORAGE_VERSION, STORAGE_KEY_TRACKED)
 
 
 async def _async_migrate_legacy_storage(hass: HomeAssistant, new_key: str) -> None:
@@ -138,6 +145,47 @@ async def _async_load_targets(hass: HomeAssistant) -> list[dict]:
     if not isinstance(targets, list):
         targets = []
     return targets
+
+
+def _normalize_tracked(devices) -> list[str]:
+    """Normalize tracked list to sorted uppercase address strings."""
+    out: list[str] = []
+    try:
+        items = devices if isinstance(devices, list) else []
+        for d in items:
+            if not isinstance(d, str):
+                continue
+            s = d.strip().upper()
+            if s and s not in out:
+                out.append(s)
+    except Exception:  # noqa: BLE001
+        pass
+    return sorted(out)
+
+
+async def _async_load_tracked(hass: HomeAssistant) -> list[str]:
+    """Load tracked BLE addresses from .storage/spatialHA/tracked."""
+    try:
+        data = await _async_load_with_migration(hass, STORAGE_KEY_TRACKED)
+    except Exception:  # noqa: BLE001
+        data = None
+    if isinstance(data, dict) and "devices" in data:
+        tracked = _normalize_tracked(data.get("devices"))
+    elif isinstance(data, list):
+        tracked = _normalize_tracked(data)
+    else:
+        tracked = []
+    hass.data.setdefault(DOMAIN, {})["tracked"] = tracked
+    return tracked
+
+
+async def _async_save_tracked(hass: HomeAssistant, devices: list[str]) -> list[str]:
+    """Save tracked BLE addresses to .storage/spatialHA/tracked."""
+    tracked = _normalize_tracked(devices)
+    store = _get_tracked_store(hass)
+    await store.async_save({"devices": tracked})
+    hass.data.setdefault(DOMAIN, {})["tracked"] = tracked
+    return tracked
 
 
 async def _async_save_targets(hass: HomeAssistant, targets: list[dict]) -> None:

@@ -214,11 +214,7 @@ export const Home3DMixin = {
         const sill = z0 + (parseFloat(win.height_from_floor) || 0.9);
         lines.push({ a: [x, y, sill], b: [x + dx * ww, y + dy * ww, sill], stroke: "#22d3ee", width: 2 });
       }
-      // Points as short posts
-      for (const pt of (floor.points || [])) {
-        lines.push({ a: [pt.x, pt.y, z0 + 0.25], b: [pt.x, pt.y, z0 + 0.7], stroke: "#03a9f4", width: 3 });
-        dots.push({ p: [pt.x, pt.y, z0 + 0.7] });
-      }
+      // Note: floor points are hidden on the map (walls/rooms carry the shape).
       // BLE receivers as green posts (placement only for now)
       for (const rx of (floor.receivers || [])) {
         const rxFill = (typeof this !== "undefined" && this._selectedReceiverId === rx.id) ? "#ff9800" : "#22c55e";
@@ -227,13 +223,17 @@ export const Home3DMixin = {
       }
       // Estimated device positions (rough triangulation, cross-floor in 3D).
       // Hidden in the floorplan editor preview via opts.positions === false.
+      // Only tracked devices show, unless "Show all devices" overrides.
+      // No stem lines: floating labeled dots only.
       if (!(opts && opts.positions === false) && (typeof this === "undefined" || this._showPositions !== false)) {
         const allPos = (typeof this !== "undefined" && this._bleData && this._bleData.positions) || [];
+        const tracked = (typeof this !== "undefined" && Array.isArray(this._trackedDevices)) ? this._trackedDevices : null;
+        const showAll = (typeof this !== "undefined" && this._showAllDevices) || tracked === null;
         for (const pos of allPos) {
           if (pos.floor_id !== floor.id) continue;
+          if (!showAll && !tracked.includes(String(pos.address || "").toUpperCase())) continue;
           const pz = (typeof pos.z === "number" && isFinite(pos.z)) ? pos.z : z0 + 0.6;
           const label = String(pos.name || pos.address || "");
-          lines.push({ a: [pos.x, pos.y, z0 + 0.25], b: [pos.x, pos.y, pz], stroke: "#f59e0b", width: 2 });
           dots.push({ p: [pos.x, pos.y, pz], fill: "#f59e0b", label });
         }
       }
@@ -347,7 +347,7 @@ export const Home3DMixin = {
         const dpr = Math.min(window.devicePixelRatio || 1, 3);
         const rect = canvas.getBoundingClientRect();
         const cssW = Math.max(300, Math.round(rect.width || 800));
-        const cssH = 420;
+        const cssH = 600;
         if (canvas.width !== Math.floor(cssW * dpr) || canvas.height !== Math.floor(cssH * dpr)) {
           canvas.width = Math.floor(cssW * dpr);
           canvas.height = Math.floor(cssH * dpr);
@@ -367,7 +367,7 @@ export const Home3DMixin = {
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     const rect = canvas.getBoundingClientRect();
     const cssW = Math.max(300, Math.round(rect.width || 800));
-    const cssH = 420;
+    const cssH = 600;
     if (canvas.width !== Math.floor(cssW * dpr) || canvas.height !== Math.floor(cssH * dpr)) {
       canvas.width = Math.floor(cssW * dpr);
       canvas.height = Math.floor(cssH * dpr);

@@ -94,16 +94,18 @@ export const BleMixin = {
       const _match = (d) => !_fq2 || [d.address, d.name || "", ...((d.service_uuids || []).map(String)), d.ibeacon ? d.ibeacon.uuid : ""].join(" ").toLowerCase().includes(_fq2);
       const devices = (this._bleData.devices || []).filter(_match);
       const updated = this._bleData.last_updated ? new Date(this._bleData.last_updated * 1000).toLocaleTimeString() : "";
+      const _tracked = Array.isArray(this._trackedDevices) ? this._trackedDevices : [];
+      const _isTracked = (d) => _tracked.includes(String(d.address || "").toUpperCase());
       if (scanners.length === 0) {
         let rows = devices.map(d => `
-          <tr><td><code>${this._esc(d.address)}</code></td><td>${this._esc(d.name)}</td><td>${d.ibeacon ? this._esc(d.ibeacon.uuid) + " " + d.ibeacon.major + "/" + d.ibeacon.minor : "N/A"}</td><td>N/A</td></tr>
+          <tr><td><input type="checkbox" data-track-addr="${this._esc(String(d.address || "").toUpperCase())}" ${_isTracked(d) ? "checked" : ""} title="Show on Home map"></td><td><code>${this._esc(d.address)}</code></td><td>${this._esc(d.name)}</td><td>${d.ibeacon ? this._esc(d.ibeacon.uuid) + " " + d.ibeacon.major + "/" + d.ibeacon.minor : "N/A"}</td><td>N/A</td></tr>
         `).join("");
         return `
-          <p><input id="ble-filter" type="search" placeholder="Filter" value="${this._esc(this._bleFilter || "")}" style="max-width:220px"> <em>${devices.length} devices.</em></p>
-          <table><thead><tr><th>MAC / UUID</th><th>Name</th><th>iBeacon</th><th>RSSI</th></tr></thead><tbody>${rows}</tbody></table>
+          <p><input id="ble-filter" type="search" placeholder="Filter" value="${this._esc(this._bleFilter || "")}" style="max-width:220px"> <em>${devices.length} devices (${_tracked.length} tracked).</em></p>
+          <table><thead><tr><th>Track</th><th>MAC / UUID</th><th>Name</th><th>iBeacon</th><th>RSSI</th></tr></thead><tbody>${rows}</tbody></table>
         `;
       }
-      let headerCols = `<th>MAC / UUID</th><th>Name</th>`;
+      let headerCols = `<th>Track</th><th>MAC / UUID</th><th>Name</th>`;
       // Add iBeacon column if any device has iBeacon
       const hasIbeacon = devices.some(d => d.ibeacon);
       if (hasIbeacon) headerCols += `<th>iBeacon UUID</th>`;
@@ -119,7 +121,7 @@ export const BleMixin = {
         headerCols += `<th>${label}<br><small>${this._esc(sc.source)}</small></th>`;
       });
       let rows = devices.map(dev => {
-        let cols = `<td><code>${this._esc(dev.address)}</code></td><td>${this._esc(dev.name)}</td>`;
+        let cols = `<td><input type="checkbox" data-track-addr="${this._esc(String(dev.address || "").toUpperCase())}" ${_isTracked(dev) ? "checked" : ""} title="Show on Home map"></td><td><code>${this._esc(dev.address)}</code></td><td>${this._esc(dev.name)}</td>`;
         if (hasIbeacon) {
           const ib = dev.ibeacon ? `${this._esc(dev.ibeacon.uuid)}<br><small>${dev.ibeacon.major}/${dev.ibeacon.minor}</small>` : "—";
           cols += `<td>${ib}</td>`;
@@ -153,7 +155,7 @@ export const BleMixin = {
 
       return `
         <div style="overflow:auto">
-          <p><input id="ble-filter" type="search" placeholder="Filter" value="${this._esc(this._bleFilter || "")}" style="max-width:220px"> <em>${devices.length} devices / ${scanners.length} scanners.</em></p>
+          <p><input id="ble-filter" type="search" placeholder="Filter" value="${this._esc(this._bleFilter || "")}" style="max-width:220px"> <em>${devices.length} devices / ${scanners.length} scanners (${_tracked.length} tracked).</em></p>
           <table>
             <thead><tr>${headerCols}</tr></thead>
             <tbody>${rows}</tbody>

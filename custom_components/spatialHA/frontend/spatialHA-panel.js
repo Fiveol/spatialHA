@@ -4,7 +4,7 @@
  * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
 if (!customElements.get("spatialHA-panel")) {
-const SPATIALHA_MOD_VERSION = "0.9.1.8";
+const SPATIALHA_MOD_VERSION = "0.9.1.9";
 function spatialHAModUrl(name) {
   return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
 }
@@ -26,6 +26,11 @@ class SpatialHAPanel extends HTMLElement {
     this._bleUnsub = null;
     this._bleFilter = "";
     this._showPositions = true;
+    this._showAllDevices = false;
+    // Tracked devices state (BLE addresses, uppercase; null = not loaded yet)
+    this._trackedDevices = null;
+    this._trackedLoading = false;
+    this._trackedSaving = false;
     // Settings state
     this._settings = null;
     this._settingsLoading = false;
@@ -136,6 +141,7 @@ class SpatialHAPanel extends HTMLElement {
     if (tab === "gps" && !this._gpsUnsub) this._ensureGpsSubscription();
     if (tab === "floorplan" && !this._floorplanUnsub) this._ensureFloorplanSubscription();
     if (tab === "floorplan" && !this._bleData && !this._bleLoading) this._fetchBleOnce();
+    if ((tab === "home" || tab === "ble" || tab === "settings") && !Array.isArray(this._trackedDevices) && !this._trackedLoading) this._fetchTracked();
     if (tab === "home") {
       if (!this._floorplan && !this._floorplanLoading && !this._floorplanUnsub) this._ensureFloorplanSubscription();
       else this._renderHomeIsoCanvas();
@@ -248,7 +254,7 @@ class SpatialHAPanel extends HTMLElement {
 
     const style = `
       :host { display: block; font-family: var(--paper-font-body1_-_font-family, sans-serif); }
-      .container { padding: 16px; max-width: 1100px; margin: 0 auto; }
+      .container { padding: 16px; max-width: 1600px; margin: 0 auto; }
       .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--divider-color, #e0e0e0); margin-bottom: 16px; flex-wrap: wrap; }
       .tabs button {
         appearance: none; border: none; background: none;
@@ -292,17 +298,28 @@ class SpatialHAPanel extends HTMLElement {
 
     const _hv = this._homeView || "iso";
     const _hvb = (id, label) => `<button data-home-view="${id}" style="padding:6px 12px; margin:2px; border:1px solid #444; border-radius:4px; background:${_hv === id ? "#03a9f4" : "#1e2228"}; color:${_hv === id ? "white" : "#cfd6df"}; cursor:pointer;">${label}</button>`;
+    const _allPos = (this._bleData && this._bleData.positions) || [];
+    const _trackedList = Array.isArray(this._trackedDevices) ? this._trackedDevices : null;
+    const _visiblePos = (_trackedList === null || this._showAllDevices)
+      ? _allPos
+      : _allPos.filter((p) => _trackedList.includes(String(p.address || "").toUpperCase()));
+    const _homeStatus = _trackedList === null
+      ? `<em>${_allPos.length} positioned devices.</em>`
+      : (this._showAllDevices
+        ? `<em>Showing all ${_allPos.length} positioned devices (override).</em>`
+        : (_trackedList.length === 0
+          ? `<em>No tracked devices — track devices on the BLE tab to show them here.</em>`
+          : `<em>Showing ${_visiblePos.length} of ${_allPos.length} positioned devices (tracked).</em>`));
     const homeContent = `
       <div class="card">
-        <h1>This is the spatialHA panel</h1>
-      </div>
-      <div class="card" style="margin-top:12px;">
         <h2>Floors</h2>
-        <div style="display:flex; gap:4px; margin:8px 0; flex-wrap:wrap;">
+        <div style="display:flex; gap:4px; margin:8px 0; flex-wrap:wrap; align-items:center;">
           ${_hvb("iso", "Isometric")}${_hvb("top", "Top Down")}${_hvb("front", "Front")}${_hvb("back", "Back")}${_hvb("left", "Left Side")}${_hvb("right", "Right Side")}
+          <label style="margin-left:auto; font-size:13px; font-weight:400;"><input id="show-all-devices" type="checkbox" ${this._showAllDevices ? "checked" : ""}> Show all devices</label>
         </div>
+        <p>${_homeStatus}</p>
         <div style="border:1px solid #333; border-radius:8px; overflow:hidden; background:#14161a;">
-          <canvas id="home-iso-canvas" width="800" height="420" style="display:block; width:100%; height:420px; background:#14161a; cursor:grab;"></canvas>
+          <canvas id="home-iso-canvas" width="1200" height="600" style="display:block; width:100%; height:600px; background:#14161a; cursor:grab;"></canvas>
         </div>
         <p><small>Drag to rotate. Scroll to zoom. Keys: WASD move, QE or +/- zoom, arrows look.</small></p>
       </div>
@@ -345,10 +362,17 @@ class SpatialHAPanel extends HTMLElement {
     } else {
       settingsInner = `<p class="loading">No settings loaded.</p><p><button id="settings-retry">Retry</button></p>`;
     }
+    const _trackedCount = Array.isArray(this._trackedDevices) ? this._trackedDevices.length : 0;
     const settingsContent = `
       <div class="card">
         <h2>Settings</h2>
         ${settingsInner}
+        <hr>
+        <div class="field">
+          <label>Tracked devices (${_trackedCount})</label>
+          <button id="tracked-clear" ${(this._trackedSaving || _trackedCount === 0) ? "disabled" : ""}>${this._trackedSaving ? "Clearing…" : "Clear tracked devices"}</button>
+        </div>
+        <p><small>Only tracked devices appear on the Home map (unless "Show all devices" is on).</small></p>
       </div>
     `;
 
@@ -555,6 +579,22 @@ class SpatialHAPanel extends HTMLElement {
       this._showPositions = e.target.checked;
       this._fpRedraw();
       if (typeof this._renderHomeIsoCanvas === "function") this._renderHomeIsoCanvas();
+    });
+    const showAll = this.shadowRoot.getElementById("show-all-devices");
+    if (showAll) showAll.addEventListener("change", (e) => {
+      this._showAllDevices = e.target.checked;
+      this._render();
+      if (typeof this._renderHomeIsoCanvas === "function") this._renderHomeIsoCanvas();
+    });
+    this.shadowRoot.querySelectorAll("[data-track-addr]").forEach(cb => {
+      cb.addEventListener("change", () => {
+        const addr = cb.getAttribute("data-track-addr");
+        if (typeof this._setTracked === "function") this._setTracked(addr, cb.checked);
+      });
+    });
+    const trackedClear = this.shadowRoot.getElementById("tracked-clear");
+    if (trackedClear) trackedClear.addEventListener("click", () => {
+      if (typeof this._clearTracked === "function") this._clearTracked();
     });
     this.shadowRoot.querySelectorAll("[data-fp-view]").forEach((b) => b.addEventListener("click", () => {
       if (typeof this._fpSetView === "function") this._fpSetView(b.getAttribute("data-fp-view"));
