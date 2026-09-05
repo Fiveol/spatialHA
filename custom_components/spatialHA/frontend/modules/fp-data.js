@@ -187,6 +187,15 @@ export const FloorplanDataMixin = {
       return null;
     },
 
+    _scannerHitTest(sx, sy, floor, radius) {
+      const r = radius || 12;
+      for (const sc of (floor.scanners || [])) {
+        const s = this._fpToScreen(sc.x, sc.y, floor);
+        if (Math.hypot(sx - s.x, sy - s.y) < r) return sc;
+      }
+      return null;
+    },
+
     _fpPushUndo() {
       try {
         this._fpUndo = this._fpUndo || [];
@@ -209,6 +218,7 @@ export const FloorplanDataMixin = {
         if (f && !(f.doors || []).find((d) => d.id === this._selectedDoorId)) this._selectedDoorId = null;
         if (f && !(f.windows || []).find((w) => w.id === this._selectedWindowId)) this._selectedWindowId = null;
         if (f && !(f.receivers || []).find((r) => r.id === this._selectedReceiverId)) this._selectedReceiverId = null;
+        if (f && !(f.scanners || []).find((s) => s.id === this._selectedScannerId)) this._selectedScannerId = null;
         this._saveFloorplan();
         this._render();
         this._renderFloorplanCanvas();

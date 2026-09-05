@@ -104,6 +104,7 @@ async def _async_load_floorplan(hass: HomeAssistant) -> dict:
         floor.setdefault("doors", [])
         floor.setdefault("windows", [])
         floor.setdefault("receivers", [])
+        floor.setdefault("scanners", [])
         # Normalize receivers (BLE receiver markers; placement only for now)
         for rx in floor["receivers"]:
             try:
@@ -114,6 +115,18 @@ async def _async_load_floorplan(hass: HomeAssistant) -> dict:
                 rx["y"] = 0.0
             if not rx.get("name"):
                 rx["name"] = "Receiver"
+        # Normalize scanners (Bluetooth scanner markers; placement only for now)
+        for sc in floor["scanners"]:
+            try:
+                sc["x"] = float(sc.get("x", 0) or 0)
+                sc["y"] = float(sc.get("y", 0) or 0)
+            except Exception:
+                sc["x"] = 0.0
+                sc["y"] = 0.0
+            if not sc.get("source"):
+                sc["source"] = ""
+            if not sc.get("name"):
+                sc["name"] = sc["source"] or "Scanner"
         # Normalize doors
         for door in floor["doors"]:
             door.setdefault("type", "Door")

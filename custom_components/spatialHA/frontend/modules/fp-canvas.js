@@ -169,6 +169,24 @@ export const FloorplanCanvasMixin = {
           ctx.beginPath(); ctx.arc(s.x, s.y, 15, 0, Math.PI * 2); ctx.stroke();
         }
       }
+      // Bluetooth scanners (placement markers only for now)
+      for (const sc of (floor.scanners || [])) {
+        const s = this._worldToScreen(sc.x, sc.y, floor);
+        const isSelected = this._selectedScannerId === sc.id;
+        ctx.fillStyle = isSelected ? "#ff9800" : "#c084fc";
+        ctx.strokeStyle = "#0b0e13"; ctx.lineWidth = 2;
+        const h = 7;
+        ctx.beginPath();
+        ctx.moveTo(s.x - h, s.y - h); ctx.lineTo(s.x + h, s.y - h); ctx.lineTo(s.x + h, s.y + h); ctx.lineTo(s.x - h, s.y + h);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = isSelected ? "#ff9800" : "rgba(192,132,252,0.8)"; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(s.x, s.y - h - 2); ctx.lineTo(s.x, s.y - h - 8); ctx.stroke();
+        ctx.beginPath(); ctx.arc(s.x, s.y - h - 8, 2, 0, Math.PI * 2); ctx.stroke();
+        if (isSelected) {
+          ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(s.x, s.y, 15, 0, Math.PI * 2); ctx.stroke();
+        }
+      }
       if (this._contextMenu && this._contextMenu.pointId) {
         const pt = floor.points.find((p) => p.id === this._contextMenu.pointId);
         if (pt) {
@@ -279,6 +297,29 @@ export const FloorplanCanvasMixin = {
         this._fpRedraw();
         return;
       }
+      // Scanner placement mode: left-click places the armed Bluetooth scanner
+      if (this._placingScanner && e.button !== 2) {
+        const w = this._fpToWorld(sx, sy, floor);
+        const sns = (v) => (typeof this._fpSnapVal === "function" ? this._fpSnapVal(v) : v);
+        const cl = this._clampToFloor(floor, sns(w.x), sns(w.y));
+        this._fpPushUndo();
+        const nid = "scanner_" + Date.now();
+        const src = this._placingScannerSource || "";
+        floor.scanners = floor.scanners || [];
+        floor.scanners.push({ id: nid, source: src, name: this._placingScannerName || src || "Scanner", x: cl.x, y: cl.y });
+        this._selectedScannerId = nid;
+        this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._selectedReceiverId = null; this._selectedScannerId = null;
+        this._placingScanner = false;
+        this._placingScannerSource = "";
+        this._placingScannerName = "";
+        this._placingDoorType = null;
+        this._placingWindow = false;
+        this._placingReceiver = false;
+        this._saveFloorplan();
+        this._render();
+        this._fpRedraw();
+        return;
+      }
       // Receiver placement mode: left-click places a BLE receiver marker
       if (this._placingReceiver && e.button !== 2) {
         const w = this._fpToWorld(sx, sy, floor);
@@ -332,6 +373,7 @@ export const FloorplanCanvasMixin = {
             this._selectedPointId = pt.id;
             this._selectedDoorId = null;
             this._selectedReceiverId = null;
+            this._selectedScannerId = null;
             this._fpRedraw();
             return;
           } else {
@@ -340,6 +382,7 @@ export const FloorplanCanvasMixin = {
             this._selectedDoorId = null;
             this._selectedWindowId = null;
             this._selectedReceiverId = null;
+            this._selectedScannerId = null;
             this._contextMenu = null;
             this._fpRedraw();
             return;
@@ -351,7 +394,7 @@ export const FloorplanCanvasMixin = {
         const hit = this._doorHitTest(sx, sy, floor, 10);
         if (hit) {
           this._selectedDoorId = hit.id;
-          this._selectedPointId = null; this._selectedWallId = null; this._selectedWindowId = null; this._selectedReceiverId = null; this._contextMenu = null;
+          this._selectedPointId = null; this._selectedWallId = null; this._selectedWindowId = null; this._selectedReceiverId = null; this._selectedScannerId = null; this._contextMenu = null;
           this._placingDoorType = null; this._placingWindow = false; this._placingReceiver = false;
           this._render();
           this._fpRedraw();
@@ -363,7 +406,7 @@ export const FloorplanCanvasMixin = {
         const hit = this._windowHitTest(sx, sy, floor, 10);
         if (hit) {
           this._selectedWindowId = hit.id;
-          this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedReceiverId = null; this._contextMenu = null;
+          this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedReceiverId = null; this._selectedScannerId = null; this._contextMenu = null;
           this._placingDoorType = null; this._placingWindow = false; this._placingReceiver = false;
           this._render();
           this._fpRedraw();
@@ -375,8 +418,20 @@ export const FloorplanCanvasMixin = {
         const hit = this._receiverHitTest(sx, sy, floor, 12);
         if (hit) {
           this._selectedReceiverId = hit.id;
-          this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._contextMenu = null;
+          this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._selectedScannerId = null; this._contextMenu = null;
           this._placingDoorType = null; this._placingWindow = false; this._placingReceiver = false;
+          this._render();
+          this._fpRedraw();
+          return;
+        }
+      }
+      // Bluetooth scanners
+      {
+        const hit = this._scannerHitTest(sx, sy, floor, 12);
+        if (hit) {
+          this._selectedScannerId = hit.id;
+          this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._selectedReceiverId = null; this._contextMenu = null;
+          this._placingDoorType = null; this._placingWindow = false; this._placingReceiver = false; this._placingScanner = false;
           this._render();
           this._fpRedraw();
           return;
@@ -390,11 +445,11 @@ export const FloorplanCanvasMixin = {
         const dist = Math.abs((s2.y - s1.y) * sx - (s2.x - s1.x) * sy + s2.x * s1.y - s2.y * s1.x) / len;
         const dot = ((sx - s1.x) * (s2.x - s1.x) + (sy - s1.y) * (s2.y - s1.y)) / (len * len);
         if (dist < 10 && dot >= 0 && dot <= 1) {
-          this._selectedWallId = wall.id; this._selectedPointId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._selectedReceiverId = null; this._contextMenu = null; this._fpRedraw(); return;
+          this._selectedWallId = wall.id; this._selectedPointId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._selectedReceiverId = null; this._selectedScannerId = null; this._contextMenu = null; this._fpRedraw(); return;
         }
       }
-      this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._selectedReceiverId = null; this._contextMenu = null;
-      if (this._placingDoorType || this._placingWindow || this._placingReceiver) { this._placingDoorType = null; this._placingWindow = false; this._placingReceiver = false; this._render(); }
+      this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._selectedReceiverId = null; this._selectedScannerId = null; this._contextMenu = null;
+      if (this._placingDoorType || this._placingWindow || this._placingReceiver || this._placingScanner) { this._placingDoorType = null; this._placingWindow = false; this._placingReceiver = false; this._placingScanner = false; this._render(); }
       this._fpRedraw();
     },
 
@@ -445,6 +500,30 @@ export const FloorplanCanvasMixin = {
         rx.x = cl.x;
         rx.y = cl.y;
         this._selectedReceiverId = rx.id;
+        this._saveFloorplan();
+        this._render();
+        this._fpRedraw();
+        return;
+      }
+      const sc = this._scannerHitTest(sx, sy, floor, 12);
+      if (sc) {
+        const nm = prompt("Scanner name?", sc.name || sc.source || "Scanner");
+        if (nm === null) return;
+        const unitLabel = this._floorplanUnits === "meters" ? "meters" : "feet/inches (e.g. 6' 11\")";
+        const xs = prompt("New X (" + unitLabel + ")?", this._formatMetersForInput(sc.x));
+        if (xs === null) return;
+        const ys = prompt("New Y (" + unitLabel + ")?", this._formatMetersForInput(sc.y));
+        if (ys === null) return;
+        const xvm = this._parseDisplayToMeters(xs), yvm = this._parseDisplayToMeters(ys);
+        if (isNaN(xvm) || isNaN(yvm)) { alert("Invalid position (try 6' 11\" or 2.5)"); return; }
+        this._fpPushUndo();
+        const sxv = typeof this._fpSnapVal === "function" ? this._fpSnapVal(xvm) : xvm;
+        const syv = typeof this._fpSnapVal === "function" ? this._fpSnapVal(yvm) : yvm;
+        const cl = this._clampToFloor(floor, sxv, syv);
+        sc.name = (nm.trim() || sc.source || "Scanner");
+        sc.x = cl.x;
+        sc.y = cl.y;
+        this._selectedScannerId = sc.id;
         this._saveFloorplan();
         this._render();
         this._fpRedraw();
@@ -590,10 +669,11 @@ export const FloorplanCanvasMixin = {
       const isFp = this._activeTab === "floorplan";
       const isHome = this._activeTab === "home";
       if (!isFp && !isHome) return;
-      if (isFp && e.key === "Escape" && (this._placingDoorType || this._placingWindow || this._placingReceiver)) {
+      if (isFp && e.key === "Escape" && (this._placingDoorType || this._placingWindow || this._placingReceiver || this._placingScanner)) {
         this._placingDoorType = null;
         this._placingWindow = false;
         this._placingReceiver = false;
+        this._placingScanner = false;
         this._render(); this._fpRedraw();
         return;
       }
@@ -612,8 +692,11 @@ export const FloorplanCanvasMixin = {
       if (mod && e.key.toLowerCase() === "c") {
         const floor = this._getActiveFloor();
         if (!floor) return;
-        // Copy selected receiver, point, wall, door, or window
-        if (this._selectedReceiverId) {
+        // Copy selected scanner, receiver, point, wall, door, or window
+        if (this._selectedScannerId) {
+          const sc = (floor.scanners || []).find((ss) => ss.id === this._selectedScannerId);
+          if (sc) { this._fpClipboard = { kind: "scanner", data: JSON.parse(JSON.stringify(sc)) }; }
+        } else if (this._selectedReceiverId) {
           const rx = (floor.receivers || []).find((rr) => rr.id === this._selectedReceiverId);
           if (rx) { this._fpClipboard = { kind: "receiver", data: JSON.parse(JSON.stringify(rx)) }; }
         } else if (this._selectedWindowId) {
@@ -669,6 +752,13 @@ export const FloorplanCanvasMixin = {
           floor.windows = floor.windows || [];
           floor.windows.push({ id: nid, x: cl.x, y: cl.y, rotation: parseFloat(src.rotation) || 0, width: parseFloat(src.width) || 1.2, height: parseFloat(src.height) || 1.2, height_from_floor: parseFloat(src.height_from_floor) || 0.9 });
           this._selectedWindowId = nid;
+        } else if (this._fpClipboard.kind === "scanner") {
+          const src = this._fpClipboard.data;
+          const nid = "scanner_" + Date.now();
+          const cl = this._clampToFloor(floor, sn((parseFloat(src.x) || 0) + 0.5), sn((parseFloat(src.y) || 0) + 0.5));
+          floor.scanners = floor.scanners || [];
+          floor.scanners.push({ id: nid, source: src.source || "", name: src.name || "Scanner", x: cl.x, y: cl.y });
+          this._selectedScannerId = nid;
         } else if (this._fpClipboard.kind === "receiver") {
           const src = this._fpClipboard.data;
           const nid = "receiver_" + Date.now();
@@ -743,7 +833,12 @@ export const FloorplanCanvasMixin = {
       if (isFp && (e.key === "Delete" || e.key === "Backspace") && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement ? document.activeElement.tagName : "")) {
         const floor = this._getActiveFloor();
         if (!floor) return;
-        if (this._selectedReceiverId) {
+        if (this._selectedScannerId) {
+          this._fpPushUndo();
+          floor.scanners = (floor.scanners || []).filter((s) => s.id !== this._selectedScannerId);
+          this._selectedScannerId = null;
+          this._saveFloorplan(); this._render(); this._fpRedraw();
+        } else if (this._selectedReceiverId) {
           this._fpPushUndo();
           floor.receivers = (floor.receivers || []).filter((r) => r.id !== this._selectedReceiverId);
           this._selectedReceiverId = null;

@@ -48,6 +48,9 @@ export const FloorplanUiMixin = {
         </div>` : (this._placingWindow ? `<p><em>Placing window - click on canvas for lower-left corner origin (Esc to cancel).</em> <button id="window-cancel-place">Cancel</button></p>` : "");
       const receiversHtml = (((floor.receivers || []).map((rx) => `<tr><td>${this._esc(rx.name || "Receiver")}</td><td>(${this._esc(this._formatMetersForInput(rx.x))}, ${this._esc(this._formatMetersForInput(rx.y))})</td><td><button data-del-receiver="${this._esc(rx.id)}">Delete</button></td></tr>`).join("")) || `<tr><td colspan="3"><em>No receivers - click Add Receiver then click canvas to place</em></td></tr>`);
       const receiverHintHtml = this._placingReceiver ? `<p><em>Placing receiver - click on canvas to place (Esc to cancel).</em> <button id="receiver-cancel-place">Cancel</button></p>` : "";
+      const discoveredScanners = ((this._bleData && this._bleData.scanners) || []).map((s) => ({ source: String(s.source || ""), label: String(s.name || s.source || "") })).filter((s) => s.source);
+      const scannersHtml = (((floor.scanners || []).map((sc) => `<tr><td>${this._esc(sc.name || sc.source || "Scanner")}</td><td><code>${this._esc(sc.source || "")}</code></td><td>(${this._esc(this._formatMetersForInput(sc.x))}, ${this._esc(this._formatMetersForInput(sc.y))})</td><td><button data-del-scanner="${this._esc(sc.id)}">Delete</button></td></tr>`).join("")) || `<tr><td colspan="4"><em>No scanners - pick one below then click canvas to place</em></td></tr>`);
+      const scannerPickHtml = `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;"><label>Scanner: <select id="scanner-source">${discoveredScanners.map((s) => `<option value="${this._esc(s.source)}">${this._esc(s.label)} (${this._esc(s.source)})</option>`).join("") || `<option value="">No scanners discovered</option>`}</select></label><input id="scanner-custom" placeholder="or custom source" style="width:170px"><button id="scanner-add">Add Scanner</button></div>${this._placingScanner ? `<p><em>Placing scanner - click on canvas to place (Esc to cancel).</em> <button id="scanner-cancel-place">Cancel</button></p>` : ""}`;
       const wd2 = this._windowDefaults();
       const windowDefaultsHtml = `
         <div style="border:1px solid #eee; padding:10px; border-radius:6px; margin-top:12px;"><h4>Default Window (used for new windows)</h4>
@@ -55,7 +58,7 @@ export const FloorplanUiMixin = {
         <label>Height: <input id="def-win-h" type="text" value="${this._esc(this._formatMetersForInput(wd2.height))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
         <label>Height from floor: <input id="def-win-sill" type="text" value="${this._esc(this._formatMetersForInput(wd2.height_from_floor))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
         <button id="window-defs-save">Save Defaults</button></div>`;
-      const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected point at (${this._formatMetersForInput(pt.x)}, ${this._formatMetersForInput(pt.y)}) - double-click to edit` : ""; })() : (this._selectedReceiverId ? `Receiver selected - double-click to rename or move` : (this._selectedWindowId ? `Window selected - edit below` : (this._selectedDoorId ? `Door selected - edit below` : (this._selectedWallId ? `Wall selected` : "Left-click selects, double-click point to edit position, right-click point for 4 arrows")))); const doorDefaultsHtml = `
+      const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected point at (${this._formatMetersForInput(pt.x)}, ${this._formatMetersForInput(pt.y)}) - double-click to edit` : ""; })() : (this._selectedScannerId ? `Scanner selected - double-click to rename or move` : (this._selectedReceiverId ? `Receiver selected - double-click to rename or move` : (this._selectedWindowId ? `Window selected - edit below` : (this._selectedDoorId ? `Door selected - edit below` : (this._selectedWallId ? `Wall selected` : "Left-click selects, double-click point to edit position, right-click point for 4 arrows"))))); const doorDefaultsHtml = `
         <div style="border:1px solid #eee; padding:10px; border-radius:6px; margin-top:12px;"><h4>Default Door Sizes (used for new doors)</h4>
         <label>Door: <input id="def-door" type="text" value="${this._esc(this._formatMetersForInput(dd["Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
         <label>Double Door: <input id="def-double" type="text" value="${this._esc(this._formatMetersForInput(dd["Double Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
@@ -116,6 +119,12 @@ export const FloorplanUiMixin = {
             <p><button id="receiver-add">Add Receiver</button> <small>click canvas to place</small></p>
             <table><thead><tr><th>Name</th><th>Position</th><th>Action</th></tr></thead><tbody>${receiversHtml}</tbody></table>
             ${receiverHintHtml}
+          </div>
+          <div style="margin-top:12px; border:1px solid #eee; padding:10px; border-radius:6px;">
+            <h3>Bluetooth Scanners</h3>
+            <p><small>Place your proxies on the plan. Position only for now.</small></p>
+            ${scannerPickHtml}
+            <table><thead><tr><th>Name</th><th>Source</th><th>Position</th><th>Action</th></tr></thead><tbody>${scannersHtml}</tbody></table>
           </div>
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px;">
             <div><h3>Walls</h3><p><button id="wall-add">Add Wall (selected + last)</button> <small>or right-drag point to point</small></p><table><thead><tr><th>Length</th><th>Action</th></tr></thead><tbody>${wallsHtml}</tbody></table></div>

@@ -112,6 +112,8 @@ export const Home3DMixin = {
     if (selWin) ring(parseFloat(selWin.x) || 0, parseFloat(selWin.y) || 0, zSlab + 0.65, "#ff9800", 12);
     const selRx = this._selectedReceiverId ? (floor.receivers || []).find((r) => r.id === this._selectedReceiverId) : null;
     if (selRx) ring(parseFloat(selRx.x) || 0, parseFloat(selRx.y) || 0, zSlab + 0.45, "#ff9800", 12);
+    const selSc = this._selectedScannerId ? (floor.scanners || []).find((s) => s.id === this._selectedScannerId) : null;
+    if (selSc) ring(parseFloat(selSc.x) || 0, parseFloat(selSc.y) || 0, zSlab + 0.45, "#ff9800", 12);
     if (this._contextMenu && this._contextMenu.pointId) {
       const pt = floor.points.find((p) => p.id === this._contextMenu.pointId);
       if (pt) {
@@ -221,6 +223,12 @@ export const Home3DMixin = {
         const rxFill = (typeof this !== "undefined" && this._selectedReceiverId === rx.id) ? "#ff9800" : "#22c55e";
         lines.push({ a: [rx.x, rx.y, z0 + 0.25], b: [rx.x, rx.y, z0 + 0.9], stroke: rxFill, width: 3 });
         dots.push({ p: [rx.x, rx.y, z0 + 0.9], fill: rxFill });
+      }
+      // Bluetooth scanners as purple posts (placement only for now)
+      for (const sc of (floor.scanners || [])) {
+        const scFill = (typeof this !== "undefined" && this._selectedScannerId === sc.id) ? "#ff9800" : "#c084fc";
+        lines.push({ a: [sc.x, sc.y, z0 + 0.25], b: [sc.x, sc.y, z0 + 0.9], stroke: scFill, width: 3 });
+        dots.push({ p: [sc.x, sc.y, z0 + 0.9], fill: scFill });
       }
       faces.push({ label: (floor.name || "") + " (L" + (floor.level || 0) + ")", at: [0, 0, z0], isLabel: true });
     });

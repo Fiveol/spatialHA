@@ -61,6 +61,10 @@ class SpatialHAPanel extends HTMLElement {
     this._placingWindow = false;
     this._selectedReceiverId = null;
     this._placingReceiver = false;
+    this._selectedScannerId = null;
+    this._placingScanner = false;
+    this._placingScannerSource = "";
+    this._placingScannerName = "";
     // Floorplan 3D preview state
     this._fpMode = "2d";
     this._fpView = "iso";
@@ -130,6 +134,7 @@ class SpatialHAPanel extends HTMLElement {
     if (tab === "targets" && !this._targetsUnsub) this._ensureTargetsSubscription();
     if (tab === "gps" && !this._gpsUnsub) this._ensureGpsSubscription();
     if (tab === "floorplan" && !this._floorplanUnsub) this._ensureFloorplanSubscription();
+    if (tab === "floorplan" && !this._bleData && !this._bleLoading) this._fetchBleOnce();
     if (tab === "home") {
       if (!this._floorplan && !this._floorplanLoading && !this._floorplanUnsub) this._ensureFloorplanSubscription();
       else this._renderHomeIsoCanvas();
@@ -753,6 +758,32 @@ class SpatialHAPanel extends HTMLElement {
       this._fpPushUndo();
       f.receivers = (f.receivers || []).filter((r) => r.id !== b.getAttribute("data-del-receiver"));
       if (this._selectedReceiverId === b.getAttribute("data-del-receiver")) this._selectedReceiverId = null;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    }));
+    const scAdd = this.shadowRoot.getElementById("scanner-add");
+    if (scAdd) scAdd.addEventListener("click", () => {
+      if (this._placingScanner) { this._placingScanner = false; this._render(); this._renderFloorplanCanvas(); return; }
+      const sel = this.shadowRoot.getElementById("scanner-source");
+      const custom = this.shadowRoot.getElementById("scanner-custom");
+      const src = (custom && custom.value.trim()) || (sel ? sel.value : "");
+      if (!src) { alert("Pick a discovered scanner or enter a custom source first."); return; }
+      let nm = src;
+      const opt = sel ? sel.selectedOptions[0] : null;
+      if (opt && !custom.value.trim()) nm = opt.textContent.split(" (")[0] || src;
+      this._placingScanner = true;
+      this._placingScannerSource = src;
+      this._placingScannerName = nm;
+      this._placingDoorType = null; this._placingWindow = false; this._placingReceiver = false;
+      this._selectedScannerId = null;
+      this._render(); this._renderFloorplanCanvas();
+    });
+    const scCancel = this.shadowRoot.getElementById("scanner-cancel-place");
+    if (scCancel) scCancel.addEventListener("click", () => { this._placingScanner = false; this._render(); this._renderFloorplanCanvas(); });
+    this.shadowRoot.querySelectorAll("[data-del-scanner]").forEach((b) => b.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      this._fpPushUndo();
+      f.scanners = (f.scanners || []).filter((s) => s.id !== b.getAttribute("data-del-scanner"));
+      if (this._selectedScannerId === b.getAttribute("data-del-scanner")) this._selectedScannerId = null;
       this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
     }));
     this.shadowRoot.querySelectorAll("[data-del-window]").forEach((b) => b.addEventListener("click", () => {
