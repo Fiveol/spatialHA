@@ -12,8 +12,12 @@ export const BleMixin = {
               this._bleData = payload;
               this._bleLoading = false;
               this._bleError = null;
-              // Only re-render if on BLE tab or Targets (needs BLE list); never disturb floorplan/inputs
-              if (this._activeTab === "ble" || (this._activeTab === "targets" && this._showAddForm)) this._render();
+              // Only re-render if on BLE tab or Targets (needs BLE list); never disturb floorplan/inputs.
+              // Coalesced + skipped while interacting so checkbox clicks and typing survive rapid pushes.
+              if (this._activeTab === "ble" || (this._activeTab === "targets" && this._showAddForm)) {
+                if (typeof this._queueRender === "function") this._queueRender();
+                else this._render();
+              }
             }
           },
           { type: "spatialHA/ble/subscribe" }

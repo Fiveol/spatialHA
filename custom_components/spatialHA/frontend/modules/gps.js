@@ -12,7 +12,10 @@ export const GpsMixin = {
               this._gpsData = payload;
               this._gpsLoading = false;
               this._gpsError = null;
-              if (this._activeTab === "gps" || (this._activeTab === "targets" && this._showAddForm)) this._render();
+              if (this._activeTab === "gps" || (this._activeTab === "targets" && this._showAddForm)) {
+                if (typeof this._queueRender === "function") this._queueRender();
+                else this._render();
+              }
             }
           },
           { type: "spatialHA/gps/subscribe" }

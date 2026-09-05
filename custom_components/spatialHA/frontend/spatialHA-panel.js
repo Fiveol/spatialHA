@@ -7,7 +7,7 @@
 // tag here. A mixed-case guard never matches and lets a second execution
 // slip through to customElements.define, which throws "already been used".
 if (!customElements.get("spatialha-panel")) {
-const SPATIALHA_MOD_VERSION = "0.9.1.11";
+const SPATIALHA_MOD_VERSION = "0.9.1.12";
 function spatialHAModUrl(name) {
   return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
 }
@@ -22,6 +22,14 @@ class SpatialHAPanel extends HTMLElement {
     this._loadingVersion = false;
     this._hasFetchedVersion = false;
     this._versionError = null;
+    // Render coalescing + interaction tracking (subscription pushes must not
+    // clobber form input, checkboxes, or scroll every update interval).
+    this._renderQueued = false;
+    this._lastRenderAt = 0;
+    this._panelPointerDown = false;
+    this._pointerBound = false;
+    this._savedScroll = null;
+    this._savedWinScroll = null;
     // BLE state
     this._bleLoading = false;
     this._bleError = null;
@@ -160,6 +168,13 @@ class SpatialHAPanel extends HTMLElement {
   }
 
   connectedCallback() {
+    if (!this._pointerBound && this.shadowRoot) {
+      this._pointerBound = true;
+      this.shadowRoot.addEventListener("pointerdown", () => { this._panelPointerDown = true; });
+      window.addEventListener("pointerup", () => { this._panelPointerDown = false; });
+      window.addEventListener("pointercancel", () => { this._panelPointerDown = false; });
+      window.addEventListener("blur", () => { this._panelPointerDown = false; });
+    }
     this._render();
     this._ensureMods().then(() => {
       this._render();
@@ -197,6 +212,72 @@ class SpatialHAPanel extends HTMLElement {
       return this[fnName].apply(this, args);
     }
     return `<p class="loading">Loading…</p>`;
+  }
+
+  _isUserInteracting() {
+    // True while the user is clicking/touching the panel or focused in a
+    // form control. Subscription pushes must skip renders in that case so
+    // checkbox clicks, typing, and selections are never interrupted.
+    try {
+      if (this._panelPointerDown) return true;
+      const a = this.shadowRoot ? this.shadowRoot.activeElement : null;
+      if (a && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(a.tagName)) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  _queueRender() {
+    // Coalesced render for background data pushes: at most one render per
+    // 200ms, skipped entirely while the user interacts (fresh data stays in
+    // memory and the next push or user action re-renders).
+    if (this._isUserInteracting()) return;
+    if (this._renderQueued) return;
+    this._renderQueued = true;
+    const wait = Math.max(0, 200 - (Date.now() - (this._lastRenderAt || 0)));
+    setTimeout(() => {
+      this._renderQueued = false;
+      if (this._isUserInteracting()) return;
+      this._render();
+    }, wait);
+  }
+
+  _saveScrollState() {
+    // Remember page + inner-container scroll so full re-renders don't yank
+    // scroll positions (tables, tab content, page).
+    try {
+      this._savedWinScroll = { x: window.scrollX || 0, y: window.scrollY || 0 };
+      const spans = [];
+      if (this.shadowRoot) {
+        const els = this.shadowRoot.querySelectorAll("*");
+        for (let i = 0; i < els.length && spans.length < 100; i++) {
+          const el = els[i];
+          if (el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1) {
+            spans.push({ key: el.id || (el.tagName + "#" + i), top: el.scrollTop, left: el.scrollLeft });
+          }
+        }
+      }
+      this._savedScroll = spans;
+    } catch (e) { this._savedScroll = null; this._savedWinScroll = null; }
+  }
+
+  _restoreScrollState() {
+    try {
+      if (this._savedWinScroll) window.scrollTo(this._savedWinScroll.x, this._savedWinScroll.y);
+      if (this._savedScroll && this.shadowRoot) {
+        const els = this.shadowRoot.querySelectorAll("*");
+        const byKey = {};
+        for (let i = 0; i < els.length; i++) {
+          const el = els[i];
+          byKey[el.id || (el.tagName + "#" + i)] = el;
+        }
+        for (const s of this._savedScroll) {
+          const el = byKey[s.key];
+          if (el) { try { el.scrollTop = s.top; el.scrollLeft = s.left; } catch (e) {} }
+        }
+      }
+    } catch (e) {}
+    this._savedScroll = null;
+    this._savedWinScroll = null;
   }
 
   async _fetchVersion() {
@@ -247,7 +328,9 @@ class SpatialHAPanel extends HTMLElement {
 
 
   _render() {
+    this._lastRenderAt = Date.now();
     // Preserve focus/selection to fix deselection on auto-refresh
+    this._saveScrollState();
     const active = this.shadowRoot ? this.shadowRoot.activeElement : null;
     const activeId = active ? active.id : null;
     const activeTag = active ? active.tagName : null;
@@ -963,6 +1046,8 @@ class SpatialHAPanel extends HTMLElement {
         }
       }
     }
+    // Restore scroll positions (page + inner scroll containers).
+    this._restoreScrollState();
   }
 
 }

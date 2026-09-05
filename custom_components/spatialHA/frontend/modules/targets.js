@@ -11,16 +11,20 @@ export const TargetsMixin = {
             const targets = payload.targets || payload;
             // Don't clobber form edits: if user is adding/editing, keep form but update list silently
             const editing = this._showAddForm;
+            const _rerenderTargets = () => {
+              if (typeof this._queueRender === "function") this._queueRender();
+              else this._render();
+            };
             if (Array.isArray(targets) || Array.isArray(payload.targets)) {
               this._targets = payload.targets || targets;
               this._targetsLoading = false;
               this._targetsError = null;
-              if (this._activeTab === "targets" && !editing) this._render();
+              if (this._activeTab === "targets" && !editing) _rerenderTargets();
               else if (this._activeTab === "targets" && editing) { /* update list without full re-render to preserve inputs */ }
             } else if (payload && payload.targets) {
               this._targets = payload.targets;
               this._targetsLoading = false;
-              if (this._activeTab === "targets" && !editing) this._render();
+              if (this._activeTab === "targets" && !editing) _rerenderTargets();
             }
           },
           { type: "spatialHA/targets/subscribe" }
