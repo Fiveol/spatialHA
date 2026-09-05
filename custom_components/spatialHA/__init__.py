@@ -222,11 +222,16 @@ def _get_floorplan_store(hass: HomeAssistant) -> Store:
     return Store(hass, STORAGE_VERSION, STORAGE_KEY_FLOORPLAN)
 
 
+DOOR_TYPES = ("Door", "Double Door", "Garage Door")
+DEFAULT_DOOR_DEFAULTS = {"Door": 0.9, "Double Door": 1.6, "Garage Door": 2.4}
+
+
 def _default_floorplan() -> dict:
     """Return default floorplan with one floor and one point at 0,0 (meters internally)."""
     return {
         "units": "meters",  # display units, internal is meters
         "active_floor_id": "floor_1",
+        "door_defaults": dict(DEFAULT_DOOR_DEFAULTS),
         "floors": [
             {
                 "id": "floor_1",
@@ -242,6 +247,7 @@ def _default_floorplan() -> dict:
                 "points": [{"id": "point_1", "x": 0.0, "y": 0.0, "label": ""}],
                 "walls": [],
                 "rooms": [],
+                "doors": [],
             }
         ],
     }
@@ -276,6 +282,9 @@ async def _async_load_floorplan(hass: HomeAssistant) -> dict:
         data["units"] = "meters"
     if "active_floor_id" not in data or not any(f["id"] == data["active_floor_id"] for f in data.get("floors", [])):
         data["active_floor_id"] = data["floors"][0]["id"] if data.get("floors") else "floor_1"
+    data.setdefault("door_defaults", dict(DEFAULT_DOOR_DEFAULTS))
+    for k, v in DEFAULT_DOOR_DEFAULTS.items():
+        data["door_defaults"].setdefault(k, v)
     # Ensure each floor has required fields
     for floor in data.get("floors", []):
         floor.setdefault("offset_x", 0.0)
@@ -288,6 +297,16 @@ async def _async_load_floorplan(hass: HomeAssistant) -> dict:
         floor.setdefault("points", [])
         floor.setdefault("walls", [])
         floor.setdefault("rooms", [])
+        floor.setdefault("doors", [])
+        # Normalize doors
+        for door in floor["doors"]:
+            door.setdefault("type", "Door")
+            if door["type"] not in DOOR_TYPES:
+                door["type"] = "Door"
+            door.setdefault("rotation", 0.0)
+            door.setdefault("swing", "right" if door["type"] == "Door" else ("left" if door["type"] == "Double Door" else "up"))
+            if "width" not in door or not isinstance(door["width"], (int, float)) or door["width"] <= 0:
+                door["width"] = data["door_defaults"].get(door["type"], 0.9)
         if not floor["points"]:
             floor["points"] = [{"id": "point_1", "x": 0.0, "y": 0.0, "label": ""}]
         # Clamp existing points into dimensions

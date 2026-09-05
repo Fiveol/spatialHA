@@ -49,6 +49,8 @@ class SpatialHAPanel extends HTMLElement {
     this._selectedPointId = null;
     this._selectedWallId = null;
     this._selectedRoomId = null;
+    this._selectedDoorId = null;
+    this._placingDoorType = null;
     this._contextMenu = null; // {x,y,pointId}
     this._dragging = null;
     this._floorplanScale = 40; // px per meter
@@ -410,6 +412,36 @@ class SpatialHAPanel extends HTMLElement {
     const ry = -x * sin + y * cos;
     return { x: (rx - (f.offset_x || 0)) / (f.scale || 1), y: (ry - (f.offset_y || 0)) / (f.scale || 1) };
   }
+  _doorDefaults() {
+    const d = (this._floorplan && this._floorplan.door_defaults) || {};
+    return {
+      "Door": parseFloat(d["Door"]) || 0.9,
+      "Double Door": parseFloat(d["Double Door"]) || 1.6,
+      "Garage Door": parseFloat(d["Garage Door"]) || 2.4,
+    };
+  }
+  _doorEndpoints(door, floor) {
+    // Returns screen-space segment + leaf geometry for a door (world meters)
+    const rad = (parseFloat(door.rotation) || 0) * Math.PI / 180;
+    const w = parseFloat(door.width) || 0.9;
+    const dx = Math.cos(rad), dy = Math.sin(rad);
+    const x = parseFloat(door.x) || 0, y = parseFloat(door.y) || 0;
+    const ax = x - dx * w / 2, ay = y - dy * w / 2;
+    const bx = x + dx * w / 2, by = y + dy * w / 2;
+    const s1 = this._worldToScreen(ax, ay, floor), s2 = this._worldToScreen(bx, by, floor);
+    return { ax, ay, bx, by, s1, s2, w, rad };
+  }
+  _doorHitTest(sx, sy, floor, radius) {
+    const r = radius || 10;
+    for (const door of (floor.doors || [])) {
+      const g = this._doorEndpoints(door, floor);
+      const len = Math.hypot(g.s2.x - g.s1.x, g.s2.y - g.s1.y) || 1;
+      const dist = Math.abs((g.s2.y - g.s1.y) * sx - (g.s2.x - g.s1.x) * sy + g.s2.x * g.s1.y - g.s2.y * g.s1.x) / len;
+      const dot = ((sx - g.s1.x) * (g.s2.x - g.s1.x) + (sy - g.s1.y) * (g.s2.y - g.s1.y)) / (len * len);
+      if (dist < r && dot >= -0.1 && dot <= 1.1) return door;
+    }
+    return null;
+  }
   _renderFloorplanCanvas() {
     const canvas = this.shadowRoot ? this.shadowRoot.getElementById("floorplan-canvas") : null;
     if (!canvas || !this._floorplan) return;
@@ -471,6 +503,62 @@ class SpatialHAPanel extends HTMLElement {
       const s1 = this._worldToScreen(p1.x, p1.y, floor), s2 = this._worldToScreen(p2.x, p2.y, floor);
       if (this._selectedWallId === wall.id) { ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 4; } else { ctx.strokeStyle = "#e8eaf0"; ctx.lineWidth = 3; }
       ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke();
+    }
+    // Doors (placeable + rotatable, no labels)
+    for (const door of (floor.doors || [])) {
+      const g = this._doorEndpoints(door, floor);
+      const isSel = this._selectedDoorId === door.id;
+      const swing = (door.swing || "right").toLowerCase();
+      // Cut opening in wall: dark gap slightly wider than wall
+      ctx.strokeStyle = "#14161a"; ctx.lineWidth = 7;
+      ctx.beginPath(); ctx.moveTo(g.s1.x, g.s1.y); ctx.lineTo(g.s2.x, g.s2.y); ctx.stroke();
+      // Frame jambs
+      ctx.strokeStyle = isSel ? "#ff9800" : "#9aa4b2"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(g.s1.x, g.s1.y); ctx.lineTo(g.s2.x, g.s2.y); ctx.stroke();
+      // Leaf(s)
+      const leafColor = isSel ? "#ff9800" : "#f1f3f5";
+      ctx.strokeStyle = leafColor; ctx.lineWidth = 2.5;
+      const leafLenPx = Math.hypot(g.s2.x - g.s1.x, g.s2.y - g.s1.y) || 1;
+      const ux = (g.s2.x - g.s1.x) / leafLenPx, uy = (g.s2.y - g.s1.y) / leafLenPx;
+      const drawLeaf = (hx, hy, angDeg, lenPx) => {
+        const a = angDeg * Math.PI / 180;
+        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(hx + Math.cos(a) * lenPx, hy + Math.sin(a) * lenPx); ctx.stroke();
+        // Swing arc
+        ctx.strokeStyle = isSel ? "rgba(255,152,0,0.7)" : "rgba(241,243,245,0.45)";
+        ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.arc(hx, hy, lenPx, Math.min(a, Math.atan2(uy, ux)), Math.max(a, Math.atan2(uy, ux)), swing === "left");
+        ctx.stroke(); ctx.setLineDash([]);
+        ctx.strokeStyle = leafColor; ctx.lineWidth = 2.5;
+      };
+      const baseAng = Math.atan2(uy, ux) * 180 / Math.PI;
+      if (door.type === "Double Door") {
+        const half = leafLenPx / 2;
+        // Two leaves swinging inward
+        const a1 = baseAng + (swing === "left" ? -70 : 70);
+        const a2 = baseAng + 180 + (swing === "left" ? 70 : -70);
+        const mx = (g.s1.x + g.s2.x) / 2, my = (g.s1.y + g.s2.y) / 2;
+        ctx.beginPath(); ctx.moveTo(g.s1.x, g.s1.y); ctx.lineTo(g.s1.x + Math.cos(a1 * Math.PI / 180) * half, g.s1.y + Math.sin(a1 * Math.PI / 180) * half); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(g.s2.x, g.s2.y); ctx.lineTo(g.s2.x + Math.cos(a2 * Math.PI / 180) * half, g.s2.y + Math.sin(a2 * Math.PI / 180) * half); ctx.stroke();
+      } else if (door.type === "Garage Door") {
+        // Garage: double line + center seam, swing up = draw parallel lines
+        const nx = -uy, ny = ux;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(g.s1.x + nx * 3, g.s1.y + ny * 3); ctx.lineTo(g.s2.x + nx * 3, g.s2.y + ny * 3); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(g.s1.x - nx * 3, g.s1.y - ny * 3); ctx.lineTo(g.s2.x - nx * 3, g.s2.y - ny * 3); ctx.stroke();
+        const mx = (g.s1.x + g.s2.x) / 2, my = (g.s1.y + g.s2.y) / 2;
+        ctx.strokeStyle = "rgba(241,243,245,0.5)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx + nx * (swing === "left" ? -14 : 14), my + ny * (swing === "left" ? -14 : 14)); ctx.stroke();
+      } else {
+        // Single door: hinge at one end based on swing
+        const hinge = swing === "left" ? { x: g.s1.x, y: g.s1.y } : { x: g.s2.x, y: g.s2.y };
+        const leafAng = baseAng + (swing === "left" ? -75 : 75);
+        drawLeaf(hinge.x, hinge.y, leafAng, leafLenPx);
+      }
+      if (isSel) {
+        const midx = (g.s1.x + g.s2.x) / 2, midy = (g.s1.y + g.s2.y) / 2;
+        ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(midx, midy, 12, 0, Math.PI * 2); ctx.stroke();
+      }
     }
     for (const pt of (floor.points || [])) {
       const s = this._worldToScreen(pt.x, pt.y, floor);
@@ -571,21 +659,58 @@ class SpatialHAPanel extends HTMLElement {
         }
       }
     }
+    // Door placement mode: left-click places a door of the pending type
+    if (this._placingDoorType && e.button !== 2) {
+      const w = this._screenToWorld(sx, sy, floor);
+      const cl = this._clampToFloor(floor, w.x, w.y);
+      const defaults = this._doorDefaults();
+      this._fpPushUndo();
+      const nid = "door_" + Date.now();
+      floor.doors = floor.doors || [];
+      floor.doors.push({
+        id: nid,
+        type: this._placingDoorType,
+        x: cl.x, y: cl.y,
+        rotation: 0,
+        width: defaults[this._placingDoorType] || 0.9,
+        swing: this._placingDoorType === "Double Door" ? "left" : (this._placingDoorType === "Garage Door" ? "up" : "right"),
+      });
+      this._selectedDoorId = nid;
+      this._selectedPointId = null; this._selectedWallId = null;
+      this._placingDoorType = null;
+      this._saveFloorplan();
+      this._render();
+      this._renderFloorplanCanvas();
+      return;
+    }
     for (const pt of floor.points) {
       const s = this._worldToScreen(pt.x, pt.y, floor);
       if (Math.hypot(sx - s.x, sy - s.y) < 12) {
         if (e.button === 2) {
           this._contextMenu = { x: sx, y: sy, pointId: pt.id };
           this._selectedPointId = pt.id;
+          this._selectedDoorId = null;
           this._renderFloorplanCanvas();
           return;
         } else {
           this._selectedPointId = pt.id;
           this._selectedWallId = null;
+          this._selectedDoorId = null;
           this._contextMenu = null;
           this._renderFloorplanCanvas();
           return;
         }
+      }
+    }
+    // Doors (select before walls so small targets win over wall lines)
+    {
+      const hit = this._doorHitTest(sx, sy, floor, 10);
+      if (hit) {
+        this._selectedDoorId = hit.id;
+        this._selectedPointId = null; this._selectedWallId = null; this._contextMenu = null;
+        this._render();
+        this._renderFloorplanCanvas();
+        return;
       }
     }
     for (const wall of floor.walls) {
@@ -596,10 +721,10 @@ class SpatialHAPanel extends HTMLElement {
       const dist = Math.abs((s2.y - s1.y) * sx - (s2.x - s1.x) * sy + s2.x * s1.y - s2.y * s1.x) / len;
       const dot = ((sx - s1.x) * (s2.x - s1.x) + (sy - s1.y) * (s2.y - s1.y)) / (len * len);
       if (dist < 10 && dot >= 0 && dot <= 1) {
-        this._selectedWallId = wall.id; this._selectedPointId = null; this._contextMenu = null; this._renderFloorplanCanvas(); return;
+        this._selectedWallId = wall.id; this._selectedPointId = null; this._selectedDoorId = null; this._contextMenu = null; this._renderFloorplanCanvas(); return;
       }
     }
-    this._selectedPointId = null; this._selectedWallId = null; this._contextMenu = null; this._renderFloorplanCanvas();
+    this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._contextMenu = null; this._renderFloorplanCanvas();
   }
   _fpPushUndo() {
     try {
@@ -619,6 +744,7 @@ class SpatialHAPanel extends HTMLElement {
       this._floorplan = JSON.parse(prev);
       const f = this._getActiveFloor();
       if (f && !f.points.find((p) => p.id === this._selectedPointId)) this._selectedPointId = null;
+      if (f && !(f.doors || []).find((d) => d.id === this._selectedDoorId)) this._selectedDoorId = null;
       this._saveFloorplan();
       this._render();
       this._renderFloorplanCanvas();
@@ -794,6 +920,11 @@ class SpatialHAPanel extends HTMLElement {
   _handleFloorplanKeyDown(e) {
     const isFp = this._activeTab === "floorplan";
     if (!isFp) return;
+    if (e.key === "Escape" && this._placingDoorType) {
+      this._placingDoorType = null;
+      this._render(); this._renderFloorplanCanvas();
+      return;
+    }
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) {
       e.preventDefault();
@@ -808,8 +939,11 @@ class SpatialHAPanel extends HTMLElement {
     if (mod && e.key.toLowerCase() === "c") {
       const floor = this._getActiveFloor();
       if (!floor) return;
-      // Copy selected point or wall
-      if (this._selectedPointId) {
+      // Copy selected point, wall, or door
+      if (this._selectedDoorId) {
+        const d = (floor.doors || []).find((dd) => dd.id === this._selectedDoorId);
+        if (d) { this._fpClipboard = { kind: "door", data: JSON.parse(JSON.stringify(d)) }; }
+      } else if (this._selectedPointId) {
         const pt = floor.points.find((p) => p.id === this._selectedPointId);
         if (pt) { this._fpClipboard = { kind: "point", data: JSON.parse(JSON.stringify(pt)) }; }
       } else if (this._selectedWallId) {
@@ -841,6 +975,13 @@ class SpatialHAPanel extends HTMLElement {
           floor.points.push({ id: n2, x: c2.x, y: c2.y, label: "" });
           floor.walls.push({ id: "wall_" + Date.now(), p1: n1, p2: n2 });
         }
+      } else if (this._fpClipboard.kind === "door") {
+        const src = this._fpClipboard.data;
+        const nid = "door_" + Date.now();
+        const cl = this._clampToFloor(floor, (parseFloat(src.x) || 0) + 0.5, (parseFloat(src.y) || 0) + 0.5);
+        floor.doors = floor.doors || [];
+        floor.doors.push({ id: nid, type: src.type || "Door", x: cl.x, y: cl.y, rotation: parseFloat(src.rotation) || 0, width: parseFloat(src.width) || 0.9, swing: src.swing || "right" });
+        this._selectedDoorId = nid;
       }
       this._saveFloorplan();
       this._render();
@@ -850,7 +991,12 @@ class SpatialHAPanel extends HTMLElement {
     if ((e.key === "Delete" || e.key === "Backspace") && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement ? document.activeElement.tagName : "")) {
       const floor = this._getActiveFloor();
       if (!floor) return;
-      if (this._selectedPointId) {
+      if (this._selectedDoorId) {
+        this._fpPushUndo();
+        floor.doors = (floor.doors || []).filter((d) => d.id !== this._selectedDoorId);
+        this._selectedDoorId = null;
+        this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+      } else if (this._selectedPointId) {
         this._fpPushUndo();
         const pid = this._selectedPointId;
         floor.points = floor.points.filter((pp) => pp.id !== pid);
@@ -934,6 +1080,16 @@ class SpatialHAPanel extends HTMLElement {
         ctx.strokeStyle = "#e8eaf0"; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(q1.x, q1.y); ctx.lineTo(q2.x, q2.y); ctx.stroke();
       }
+      // Doors
+      for (const door of (floor.doors || [])) {
+        const rad = (parseFloat(door.rotation) || 0) * Math.PI / 180;
+        const w = parseFloat(door.width) || 0.9;
+        const dx = Math.cos(rad), dy = Math.sin(rad);
+        const x = parseFloat(door.x) || 0, y = parseFloat(door.y) || 0;
+        const q1 = proj(x - dx * w / 2, y - dy * w / 2), q2 = proj(x + dx * w / 2, y + dy * w / 2);
+        ctx.strokeStyle = "#fbbf24"; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.moveTo(q1.x, q1.y); ctx.lineTo(q2.x, q2.y); ctx.stroke();
+      }
       // Points (no labels)
       for (const pt of (floor.points || [])) {
         const q = proj(pt.x, pt.y);
@@ -964,7 +1120,31 @@ class SpatialHAPanel extends HTMLElement {
       return `<tr><td>${this._esc(this._metersToDisplay(len))}</td><td><button data-del-wall="${this._esc(w.id)}">Delete</button></td></tr>`;
     }).join("") || `<tr><td colspan="2"><em>No walls</em></td></tr>`;
     const roomsHtml = (floor.rooms || []).map((r) => `<tr><td>${this._esc(r.name)}</td><td>${this._esc(String((r.point_ids || []).length))} pts</td><td><input type="color" value="${this._esc(r.color || "#6496ff")}" data-room-color="${this._esc(r.id)}" style="width:40px;"></td><td><button data-del-room="${this._esc(r.id)}">Delete</button></td></tr>`).join("") || `<tr><td colspan="4"><em>No rooms</em></td></tr>`;
-    const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected point at (${this._formatMetersForInput(pt.x)}, ${this._formatMetersForInput(pt.y)}) - double-click to edit` : ""; })() : (this._selectedWallId ? `Wall selected` : "Left-click selects, double-click point to edit position, right-click point for 4 arrows");
+    const doorsHtml = ((floor.doors || []).map((dr) => `<tr><td>${this._esc(dr.type)}</td><td>${this._esc(this._formatMetersForInput(dr.width || 0.9))}</td><td>${this._esc(String(Math.round(((parseFloat(dr.rotation) || 0)))))}°</td><td>${this._esc(dr.swing || "")}</td><td><button data-del-door="${this._esc(dr.id)}">Delete</button></td></tr>`).join("") || `<tr><td colspan="5"><em>No doors - click Door / Double / Garage then click canvas to place</em></td></tr>`);
+    const selDoor = this._selectedDoorId ? (floor.doors || []).find((d) => d.id === this._selectedDoorId) : null;
+    const doorEditHtml = selDoor ? `
+      <div style="border:1px solid #ff9800; padding:10px; border-radius:6px; margin-top:8px;">
+        <h4>Selected Door (${this._esc(selDoor.type)})</h4>
+        <label>X: <input id="door-x" type="text" value="${this._esc(this._formatMetersForInput(selDoor.x || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <label>Y: <input id="door-y" type="text" value="${this._esc(this._formatMetersForInput(selDoor.y || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <label>Rotation (deg): <input id="door-rot" type="number" step="5" value="${Math.round(parseFloat(selDoor.rotation) || 0)}" style="width:80px"></label>
+        <button id="door-rot-left" title="Rotate -15°">⟲</button><button id="door-rot-right" title="Rotate +15°">⟳</button><br>
+        <label>Size: <input id="door-width" type="text" value="${this._esc(this._formatMetersForInput(selDoor.width || 0.9))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <label>Swing: <select id="door-swing">
+          <option value="left" ${selDoor.swing === "left" ? "selected" : ""}>left</option>
+          <option value="right" ${selDoor.swing === "right" ? "selected" : ""}>right</option>
+          <option value="up" ${selDoor.swing === "up" ? "selected" : ""}>up</option>
+          <option value="none" ${selDoor.swing === "none" ? "selected" : ""}>none</option>
+        </select></label><br>
+        <button id="door-save">Save Door</button>
+      </div>` : (this._placingDoorType ? `<p><em>Placing ${this._esc(this._placingDoorType)} - click on canvas to place (Esc to cancel).</em> <button id="door-cancel-place">Cancel</button></p>` : "");
+    const dd = this._doorDefaults();
+    const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected point at (${this._formatMetersForInput(pt.x)}, ${this._formatMetersForInput(pt.y)}) - double-click to edit` : ""; })() : (this._selectedDoorId ? `Door selected - edit below` : (this._selectedWallId ? `Wall selected` : "Left-click selects, double-click point to edit position, right-click point for 4 arrows")); const doorDefaultsHtml = `
+      <div style="border:1px solid #eee; padding:10px; border-radius:6px; margin-top:12px;"><h4>Default Door Sizes (used for new doors)</h4>
+      <label>Door: <input id="def-door" type="text" value="${this._esc(this._formatMetersForInput(dd["Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+      <label>Double Door: <input id="def-double" type="text" value="${this._esc(this._formatMetersForInput(dd["Double Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+      <label>Garage Door: <input id="def-garage" type="text" value="${this._esc(this._formatMetersForInput(dd["Garage Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+      <button id="door-defs-save">Save Defaults</button></div>`;
     return `
       <div class="card">
         <h2>Floor Plan - ${this._esc(floor.name)}</h2>
@@ -980,6 +1160,17 @@ class SpatialHAPanel extends HTMLElement {
           <canvas id="floorplan-canvas" width="800" height="500" style="display:block; cursor:crosshair; width:100%; height:100%; background:#14161a;"></canvas>
         </div>
         <p><small>${selectedInfo} | Scale: ${this._floorplanScale.toFixed(1)}px/m</small></p>
+        <div style="margin-top:12px; border:1px solid #eee; padding:10px; border-radius:6px;">
+          <h3>Doors</h3>
+          <p>
+            <button id="door-add-Door">Add Door</button>
+            <button id="door-add-Double">Add Double Door</button>
+            <button id="door-add-Garage">Add Garage Door</button>
+          </p>
+          <table><thead><tr><th>Type</th><th>Size</th><th>Rotation</th><th>Swing</th><th>Action</th></tr></thead><tbody>${doorsHtml}</tbody></table>
+          ${doorEditHtml}
+          ${doorDefaultsHtml}
+        </div>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px;">
           <div><h3>Walls</h3><p><button id="wall-add">Add Wall (selected + last)</button> <small>or right-drag point to point</small></p><table><thead><tr><th>Length</th><th>Action</th></tr></thead><tbody>${wallsHtml}</tbody></table></div>
           <div><h3>Rooms</h3><p><button id="room-add">Add Room (all points)</button> <small>or middle-drag across points</small></p><table><thead><tr><th>Name</th><th>Points</th><th>Color</th><th>Action</th></tr></thead><tbody>${roomsHtml}</tbody></table></div>
@@ -1733,6 +1924,71 @@ class SpatialHAPanel extends HTMLElement {
       const r = (f.rooms || []).find((rr) => rr.id === e.target.getAttribute("data-room-color"));
       if (r) { r.color = e.target.value; this._saveFloorplan(); this._renderFloorplanCanvas(); }
     }));
+    const doorBtn = (id, type) => {
+      const b = this.shadowRoot.getElementById(id);
+      if (b) b.addEventListener("click", () => {
+        if (this._placingDoorType === type) this._placingDoorType = null;
+        else { this._placingDoorType = type; this._selectedDoorId = null; }
+        this._render(); this._renderFloorplanCanvas();
+      });
+    };
+    doorBtn("door-add-Door", "Door");
+    doorBtn("door-add-Double", "Double Door");
+    doorBtn("door-add-Garage", "Garage Door");
+    const doorCancel = this.shadowRoot.getElementById("door-cancel-place");
+    if (doorCancel) doorCancel.addEventListener("click", () => { this._placingDoorType = null; this._render(); this._renderFloorplanCanvas(); });
+    this.shadowRoot.querySelectorAll("[data-del-door]").forEach((b) => b.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      this._fpPushUndo();
+      f.doors = (f.doors || []).filter((d) => d.id !== b.getAttribute("data-del-door"));
+      if (this._selectedDoorId === b.getAttribute("data-del-door")) this._selectedDoorId = null;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    }));
+    const doorSave = this.shadowRoot.getElementById("door-save");
+    if (doorSave) doorSave.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      const d = (f.doors || []).find((dd) => dd.id === this._selectedDoorId);
+      if (!d) return;
+      this._fpPushUndo();
+      const dx = this.shadowRoot.getElementById("door-x"), dy = this.shadowRoot.getElementById("door-y");
+      const dr = this.shadowRoot.getElementById("door-rot"), dw = this.shadowRoot.getElementById("door-width");
+      const sw = this.shadowRoot.getElementById("door-swing");
+      if (dx) { const v = this._parseDisplayToMeters(dx.value); if (!isNaN(v)) { const cl = this._clampToFloor(f, v, d.y); d.x = cl.x; } }
+      if (dy) { const v = this._parseDisplayToMeters(dy.value); if (!isNaN(v)) { const cl = this._clampToFloor(f, d.x, v); d.y = cl.y; } }
+      if (dr) { const v = parseFloat(dr.value); if (!isNaN(v)) d.rotation = ((v % 360) + 360) % 360; }
+      if (dw) { const v = this._parseDisplayToMeters(dw.value); if (!isNaN(v) && v >= 0.2) d.width = v; }
+      if (sw && ["left", "right", "up", "none"].includes(sw.value)) d.swing = sw.value;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    const rotL = this.shadowRoot.getElementById("door-rot-left");
+    if (rotL) rotL.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      const d = (f.doors || []).find((dd) => dd.id === this._selectedDoorId);
+      if (!d) return;
+      this._fpPushUndo();
+      d.rotation = (((parseFloat(d.rotation) || 0) - 15) % 360 + 360) % 360;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    const rotR = this.shadowRoot.getElementById("door-rot-right");
+    if (rotR) rotR.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      const d = (f.doors || []).find((dd) => dd.id === this._selectedDoorId);
+      if (!d) return;
+      this._fpPushUndo();
+      d.rotation = (((parseFloat(d.rotation) || 0) + 15) % 360 + 360) % 360;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
+    const defsSave = this.shadowRoot.getElementById("door-defs-save");
+    if (defsSave) defsSave.addEventListener("click", () => {
+      if (!this._floorplan) return;
+      this._fpPushUndo();
+      this._floorplan.door_defaults = this._floorplan.door_defaults || {};
+      const d1 = this.shadowRoot.getElementById("def-door"), d2 = this.shadowRoot.getElementById("def-double"), d3 = this.shadowRoot.getElementById("def-garage");
+      if (d1) { const v = this._parseDisplayToMeters(d1.value); if (!isNaN(v) && v >= 0.2) this._floorplan.door_defaults["Door"] = v; }
+      if (d2) { const v = this._parseDisplayToMeters(d2.value); if (!isNaN(v) && v >= 0.2) this._floorplan.door_defaults["Double Door"] = v; }
+      if (d3) { const v = this._parseDisplayToMeters(d3.value); if (!isNaN(v) && v >= 0.2) this._floorplan.door_defaults["Garage Door"] = v; }
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    });
     const alignSave = this.shadowRoot.getElementById("align-save");
     if (alignSave) alignSave.addEventListener("click", () => {
       const f = this._getActiveFloor(); if (!f) return;
