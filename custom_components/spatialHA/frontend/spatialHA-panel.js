@@ -4,6 +4,10 @@
  * through Home Assistant: hass.callWS / hass.connection.subscribeMessage -> backend -> HA
  */
 if (!customElements.get("spatialHA-panel")) {
+const SPATIALHA_MOD_VERSION = "0.9.0";
+function spatialHAModUrl(name) {
+  return "/api/panels/spatialHA/modules/" + name + ".js?v=" + SPATIALHA_MOD_VERSION;
+}
 class SpatialHAPanel extends HTMLElement {
   constructor() {
     super();
@@ -59,33 +63,76 @@ class SpatialHAPanel extends HTMLElement {
     this._floorplanOffset = {x: 400, y: 300};
     this._floorplanPanning = false;
     this._floorplanPanStart = null;
+    // Home 3D view state
+    this._homeView = "iso";
+    this._homeYawOff = 0;
+    this._homePitchOff = 0;
+    this._homeZoom = 1;
+    this._homeRotating = false;
+    // Feature module loader state
+    this._modsReady = false;
+    this._modsPromise = null;
+  }
+
+  async _ensureMods() {
+    if (this._modsReady) return;
+    if (!this._modsPromise) {
+      this._modsPromise = (async () => {
+        const defs = [
+          ["utils", "UtilsMixin"],
+          ["ble", "BleMixin"],
+          ["gps", "GpsMixin"],
+          ["settings", "SettingsMixin"],
+          ["targets", "TargetsMixin"],
+          ["fp-data", "FloorplanDataMixin"],
+          ["fp-canvas", "FloorplanCanvasMixin"],
+          ["fp-ui", "FloorplanUiMixin"],
+          ["home3d", "Home3DMixin"],
+        ];
+        const mods = await Promise.all(defs.map(([n]) => import(spatialHAModUrl(n))));
+        const proto = Object.getPrototypeOf(this);
+        mods.forEach((m, i) => {
+          const mix = m[defs[i][1]];
+          if (mix) Object.assign(proto, mix);
+        });
+        this._modsReady = true;
+      })().catch((err) => {
+        this._modsPromise = null;
+        console.error("spatialHA modules failed to load", err);
+        throw err;
+      });
+    }
+    try { await this._modsPromise; } catch (e) { /* render shows retry */ }
+  }
+
+  _dispatchTab(tab) {
+    if (!this._hass || !this._modsReady) return;
+    if (tab === "about" && !this._hasFetchedVersion && !this._loadingVersion) this._fetchVersion();
+    if (tab === "settings" && !this._settings && !this._settingsLoading) this._fetchSettings();
+    if (tab === "ble" && !this._bleUnsub) this._ensureBleSubscription();
+    if (tab === "targets" && !this._targetsUnsub) this._ensureTargetsSubscription();
+    if (tab === "gps" && !this._gpsUnsub) this._ensureGpsSubscription();
+    if (tab === "floorplan" && !this._floorplanUnsub) this._ensureFloorplanSubscription();
+    if (tab === "home") {
+      if (!this._floorplan && !this._floorplanLoading && !this._floorplanUnsub) this._ensureFloorplanSubscription();
+      else this._renderHomeIsoCanvas();
+    }
   }
 
   set hass(hass) {
-    const firstHass = !this._hass;
     this._hass = hass;
-    if (firstHass) {
-      if (this._activeTab === "about" && !this._hasFetchedVersion) this._fetchVersion();
-      if (this._activeTab === "settings" && !this._settings) this._fetchSettings();
-      if (this._activeTab === "ble") this._ensureBleSubscription();
-      if (this._activeTab === "targets") this._ensureTargetsSubscription();
-      if (this._activeTab === "gps") this._ensureGpsSubscription();
-      if (this._activeTab === "floorplan") this._ensureFloorplanSubscription();
-      if (this._activeTab === "home" && !this._floorplan && !this._floorplanLoading) this._fetchFloorplanOnce();
-    } else {
-      if (this._activeTab === "about" && !this._hasFetchedVersion && !this._loadingVersion) this._fetchVersion();
-      if (this._activeTab === "ble" && !this._bleUnsub) this._ensureBleSubscription();
-      if (this._activeTab === "settings" && !this._settings && !this._settingsLoading) this._fetchSettings();
-      if (this._activeTab === "targets" && !this._targetsUnsub) this._ensureTargetsSubscription();
-      if (this._activeTab === "gps" && !this._gpsUnsub) this._ensureGpsSubscription();
-      if (this._activeTab === "floorplan" && !this._floorplanUnsub) this._ensureFloorplanSubscription();
-      if (this._activeTab === "home" && !this._floorplan && !this._floorplanLoading && !this._floorplanUnsub) this._ensureFloorplanSubscription();
-      if (this._activeTab === "home" && this._floorplan) this._renderHomeIsoCanvas();
-    }
+    this._ensureMods().then(() => {
+      if (!this._hass) return;
+      this._dispatchTab(this._activeTab);
+    });
   }
 
   connectedCallback() {
     this._render();
+    this._ensureMods().then(() => {
+      this._render();
+      this._dispatchTab(this._activeTab);
+    });
   }
 
   disconnectedCallback() {
@@ -99,21 +146,25 @@ class SpatialHAPanel extends HTMLElement {
     if (this._activeTab === tab) return;
     this._activeTab = tab;
     this._render();
-    if (tab === "about" && !this._hasFetchedVersion && this._hass && !this._loadingVersion) this._fetchVersion();
-    if (tab === "settings" && !this._settings && this._hass && !this._settingsLoading) this._fetchSettings();
-    if (tab === "ble" && this._hass) this._ensureBleSubscription();
-    if (tab === "targets" && this._hass) this._ensureTargetsSubscription();
-    if (tab === "gps" && this._hass) this._ensureGpsSubscription();
-    if (tab === "floorplan" && this._hass) this._ensureFloorplanSubscription();
-    if (tab === "home" && this._hass) {
-      if (!this._floorplan && !this._floorplanLoading) this._fetchFloorplanOnce();
-      else setTimeout(() => this._renderHomeIsoCanvas(), 0);
-    }
+    this._ensureMods().then(() => this._dispatchTab(tab));
   }
 
   _switchBleSubTab(sub) {
     this._activeBleSubTab = sub;
     this._render();
+  }
+
+  _esc(s) {
+    if (s === null || s === undefined) return "";
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  _viewOrLoading(fnName) {
+    if (typeof this[fnName] === "function") {
+      const args = Array.prototype.slice.call(arguments, 1);
+      return this[fnName].apply(this, args);
+    }
+    return `<p class="loading">Loading…</p>`;
   }
 
   async _fetchVersion() {
@@ -135,1579 +186,33 @@ class SpatialHAPanel extends HTMLElement {
     }
   }
 
-  async _fetchSettings() {
-    if (!this._hass || this._settingsLoading) return;
-    this._settingsLoading = true;
-    this._settingsError = null;
-    this._render();
-    try {
-      const settings = await this._hass.callWS({ type: "spatialHA/settings/get" });
-      this._settings = settings;
-      this._pendingInterval = String(settings.update_interval ?? 1);
-    } catch (err) {
-      this._settingsError = err.message || String(err);
-    } finally {
-      this._settingsLoading = false;
-      this._render();
-    }
-  }
 
-  async _saveSettings() {
-    if (!this._hass || this._settingsSaving) return;
-    const val = parseFloat(this._pendingInterval);
-    if (isNaN(val) || val < 0.5 || val > 3600) {
-      this._settingsError = "Update Interval must be between 0.5 and 3600 seconds";
-      this._render();
-      return;
-    }
-    this._settingsSaving = true;
-    this._settingsError = null;
-    this._render();
-    try {
-      const res = await this._hass.callWS({ type: "spatialHA/settings/set", update_interval: val });
-      this._settings = res;
-      this._pendingInterval = String(res.update_interval);
-    } catch (err) {
-      this._settingsError = err.message || String(err);
-    } finally {
-      this._settingsSaving = false;
-      this._render();
-    }
-  }
 
-  _ensureBleSubscription() {
-    if (!this._hass || !this._hass.connection || this._bleUnsub) return;
-    this._bleLoading = true;
-    this._render();
-    try {
-      const sub = this._hass.connection.subscribeMessage(
-        (msg) => {
-          const data = msg.data || msg;
-          const payload = data.data || data;
-          if (payload && (payload.scanners || payload.devices || payload.sightings)) {
-            this._bleData = payload;
-            this._bleLoading = false;
-            this._bleError = null;
-            // Only re-render if on BLE tab or Targets (needs BLE list); never disturb floorplan/inputs
-            if (this._activeTab === "ble" || (this._activeTab === "targets" && this._showAddForm)) this._render();
-          }
-        },
-        { type: "spatialHA/ble/subscribe" }
-      );
-      if (sub && typeof sub.then === "function") {
-        sub.then((unsub) => {
-          this._bleUnsub = unsub;
-          this._bleLoading = false;
-          this._fetchBleOnce();
-        }).catch(() => {
-          this._bleLoading = false;
-          this._fetchBleOnce();
-        });
-      } else if (typeof sub === "function") {
-        this._bleUnsub = sub;
-        this._bleLoading = false;
-      } else {
-        this._bleLoading = false;
-        this._fetchBleOnce();
-      }
-    } catch (e) {
-      this._bleLoading = false;
-      this._fetchBleOnce();
-    }
-  }
 
-  async _fetchBleOnce() {
-    if (!this._hass) return;
-    try {
-      const data = await this._hass.callWS({ type: "spatialHA/ble/get_data" });
-      this._bleData = data;
-      this._bleError = null;
-    } catch (err) {
-      this._bleError = err.message || String(err);
-    } finally {
-      this._bleLoading = false;
-      this._render();
-    }
-  }
 
-  _ensureGpsSubscription() {
-    if (!this._hass || !this._hass.connection || this._gpsUnsub) return;
-    this._gpsLoading = true;
-    this._render();
-    try {
-      const sub = this._hass.connection.subscribeMessage(
-        (msg) => {
-          const data = msg.data || msg;
-          const payload = data.data || data;
-          if (payload && (payload.entities || payload.count !== undefined)) {
-            this._gpsData = payload;
-            this._gpsLoading = false;
-            this._gpsError = null;
-            if (this._activeTab === "gps" || (this._activeTab === "targets" && this._showAddForm)) this._render();
-          }
-        },
-        { type: "spatialHA/gps/subscribe" }
-      );
-      if (sub && typeof sub.then === "function") {
-        sub.then((unsub) => {
-          this._gpsUnsub = unsub;
-          this._gpsLoading = false;
-          this._fetchGpsOnce();
-        }).catch(() => {
-          this._gpsLoading = false;
-          this._fetchGpsOnce();
-        });
-      } else if (typeof sub === "function") {
-        this._gpsUnsub = sub;
-        this._gpsLoading = false;
-      } else {
-        this._gpsLoading = false;
-        this._fetchGpsOnce();
-      }
-    } catch (e) {
-      this._gpsLoading = false;
-      this._fetchGpsOnce();
-    }
-  }
 
-  async _fetchGpsOnce() {
-    if (!this._hass) return;
-    try {
-      const data = await this._hass.callWS({ type: "spatialHA/gps/list" });
-      this._gpsData = data;
-      this._gpsError = null;
-    } catch (err) {
-      this._gpsError = err.message || String(err);
-    } finally {
-      this._gpsLoading = false;
-      this._render();
-    }
-  }
 
   // ---- Floorplan ----
-  _metersToDisplay(m) {
-    if (this._floorplanUnits === "feet_inches") {
-      const totalInches = m * 39.3701;
-      const feet = Math.floor(totalInches / 12);
-      const inches = (totalInches % 12).toFixed(1);
-      return feet + "' " + inches + '"';
-    }
-    return Number(m).toFixed(2) + " m";
-  }
-  _displayToMeters(v) {
-    if (typeof v === "string") return this._parseDisplayToMeters(v);
-    if (this._floorplanUnits === "feet_inches") return v * 0.3048;
-    return v;
-  }
-  _parseDisplayToMeters(str) {
-    if (str === null || str === undefined) return NaN;
-    if (typeof str === "number") {
-      if (this._floorplanUnits === "feet_inches") return str * 0.3048;
-      return str;
-    }
-    const s = String(str).trim();
-    if (!s) return NaN;
-    if (this._floorplanUnits !== "feet_inches") {
-      // Meters: allow "2.5", "2.5 m", "250 cm"
-      const m = s.match(/^(-?[\d.]+)\s*(m|meter|meters|cm)?$/i);
-      if (!m) return parseFloat(s);
-      const v = parseFloat(m[1]);
-      if (isNaN(v)) return NaN;
-      if ((m[2] || "").toLowerCase() === "cm") return v / 100;
-      return v;
-    }
-    // Feet/inches: accept 6' 11", 6'11", 6 ft 11 in, 6.5 (feet), 11" (inches), 11 in
-    let m = s.match(/^(-?[\d.]+)\s*(?:'|ft|feet)\s*(-?[\d.]+)?\s*(?:"|″|in|inch|inches)?\s*$/i);
-    if (m) {
-      const feet = parseFloat(m[1]);
-      const inches = m[2] !== undefined && m[2] !== "" ? parseFloat(m[2]) : 0;
-      if (isNaN(feet) || isNaN(inches)) return NaN;
-      const sign = feet < 0 || Object.is(feet, -0) ? -1 : 1;
-      return sign * (Math.abs(feet) * 12 + Math.abs(inches)) * 0.0254;
-    }
-    // Inches only: 11", 11 in
-    m = s.match(/^(-?[\d.]+)\s*(?:"|″|in|inch|inches)\s*$/i);
-    if (m) {
-      const inches = parseFloat(m[1]);
-      if (isNaN(inches)) return NaN;
-      return inches * 0.0254;
-    }
-    // Bare number = feet decimal
-    const v = parseFloat(s);
-    if (isNaN(v)) return NaN;
-    return v * 0.3048;
-  }
-  _formatMetersForInput(m) {
-    if (this._floorplanUnits === "feet_inches") {
-      const totalInches = m / 0.0254;
-      const feet = Math.floor(totalInches / 12);
-      const inches = (totalInches - feet * 12).toFixed(1);
-      return feet + "' " + inches + '"';
-    }
-    return Number(m).toFixed(2);
-  }
-  _clampToFloor(floor, x, y) {
-    const w = parseFloat(floor.width) || 10, d = parseFloat(floor.depth) || 8;
-    return { x: Math.min(Math.max(x, 0), w > 0 ? w : 10), y: Math.min(Math.max(y, 0), d > 0 ? d : 8) };
-  }
-  _ensureFloorplanSubscription() {
-    if (!this._hass || !this._hass.connection || this._floorplanUnsub) return;
-    this._floorplanLoading = true;
-    this._render();
-    try {
-      const sub = this._hass.connection.subscribeMessage((msg) => {
-        const data = msg.data || msg;
-        const fp = data.floorplan || (data.data && data.data.floorplan) || data;
-        if (fp && fp.floors) {
-          this._floorplan = fp;
-          this._floorplanUnits = fp.units || "meters";
-          if (!this._selectedFloorId && fp.floors.length) this._selectedFloorId = fp.active_floor_id || fp.floors[0].id;
-          this._floorplanLoading = false;
-          this._floorplanError = null;
-          // Only full re-render if on floorplan tab and not mid-drag; else just redraw canvas
-          if (this._activeTab === "floorplan" && !this._dragging && !this._floorplanPanning) this._render();
-          this._renderFloorplanCanvas();
-          if (this._activeTab === "home") this._renderHomeIsoCanvas();
-        }
-      }, { type: "spatialHA/floorplan/subscribe" });
-      if (sub && typeof sub.then === "function") {
-        sub.then((unsub) => { this._floorplanUnsub = unsub; this._floorplanLoading = false; this._fetchFloorplanOnce(); }).catch(() => { this._floorplanLoading = false; this._fetchFloorplanOnce(); });
-      } else if (typeof sub === "function") { this._floorplanUnsub = sub; this._floorplanLoading = false; }
-      else { this._floorplanLoading = false; this._fetchFloorplanOnce(); }
-    } catch (e) { this._floorplanLoading = false; this._fetchFloorplanOnce(); }
-  }
-  async _fetchFloorplanOnce() {
-    if (!this._hass) return;
-    try {
-      const fp = await this._hass.callWS({ type: "spatialHA/floorplan/get" });
-      this._floorplan = fp;
-      this._floorplanUnits = fp.units || "meters";
-      if (!this._selectedFloorId && fp.floors && fp.floors.length) this._selectedFloorId = fp.active_floor_id || fp.floors[0].id;
-    } catch (err) { this._floorplanError = err.message || String(err); }
-    finally { this._floorplanLoading = false; this._render(); this._renderFloorplanCanvas(); this._renderHomeIsoCanvas(); }
-  }
-  async _saveFloorplan() {
-    if (!this._hass || !this._floorplan) return;
-    try { this._floorplan.units = this._floorplanUnits; this._floorplan.active_floor_id = this._selectedFloorId; await this._hass.callWS({ type: "spatialHA/floorplan/set", floorplan: this._floorplan }); } catch (e) { console.error(e); }
-  }
-  _getActiveFloor() {
-    if (!this._floorplan || !this._floorplan.floors) return null;
-    return this._floorplan.floors.find((f) => f.id === this._selectedFloorId) || this._floorplan.floors[0];
-  }
-  _worldToScreen(x, y, floor) {
-    const f = floor || this._getActiveFloor();
-    if (!f) return { x: 0, y: 0 };
-    const cos = Math.cos(f.rotation || 0), sin = Math.sin(f.rotation || 0);
-    const sx = (x * (f.scale || 1) + (f.offset_x || 0));
-    const sy = (y * (f.scale || 1) + (f.offset_y || 0));
-    const rx = sx * cos - sy * sin;
-    const ry = sx * sin + sy * cos;
-    return { x: rx * this._floorplanScale + this._floorplanOffset.x, y: ry * this._floorplanScale + this._floorplanOffset.y };
-  }
-  _screenToWorld(sx, sy, floor) {
-    const f = floor || this._getActiveFloor();
-    if (!f) return { x: 0, y: 0 };
-    const cos = Math.cos(f.rotation || 0), sin = Math.sin(f.rotation || 0);
-    const x = (sx - this._floorplanOffset.x) / this._floorplanScale;
-    const y = (sy - this._floorplanOffset.y) / this._floorplanScale;
-    const rx = x * cos + y * sin;
-    const ry = -x * sin + y * cos;
-    return { x: (rx - (f.offset_x || 0)) / (f.scale || 1), y: (ry - (f.offset_y || 0)) / (f.scale || 1) };
-  }
-  _doorDefaults() {
-    const d = (this._floorplan && this._floorplan.door_defaults) || {};
-    return {
-      "Door": parseFloat(d["Door"]) || 0.9,
-      "Double Door": parseFloat(d["Double Door"]) || 1.6,
-      "Garage Door": parseFloat(d["Garage Door"]) || 2.4,
-    };
-  }
-  _windowDefaults() {
-    const d = (this._floorplan && this._floorplan.window_defaults) || {};
-    return {
-      width: parseFloat(d.width) || 1.2,
-      height: parseFloat(d.height) || 1.2,
-      height_from_floor: parseFloat(d.height_from_floor) || 0.9,
-    };
-  }
-  _windowSeg(win, floor) {
-    // Origin = lower-left corner; segment along rotation dir, length = width
-    const rad = (parseFloat(win.rotation) || 0) * Math.PI / 180;
-    const w = parseFloat(win.width) || 1.2;
-    const x = parseFloat(win.x) || 0, y = parseFloat(win.y) || 0;
-    const dx = Math.cos(rad), dy = Math.sin(rad);
-    const s1 = this._worldToScreen(x, y, floor);
-    const s2 = this._worldToScreen(x + dx * w, y + dy * w, floor);
-    return { s1, s2, rad, w, x, y, dx, dy };
-  }
-  _windowHitTest(sx, sy, floor, radius) {
-    const r = radius || 10;
-    for (const win of (floor.windows || [])) {
-      const g = this._windowSeg(win, floor);
-      const len = Math.hypot(g.s2.x - g.s1.x, g.s2.y - g.s1.y) || 1;
-      const dist = Math.abs((g.s2.y - g.s1.y) * sx - (g.s2.x - g.s1.x) * sy + g.s2.x * g.s1.y - g.s2.y * g.s1.x) / len;
-      const dot = ((sx - g.s1.x) * (g.s2.x - g.s1.x) + (sy - g.s1.y) * (g.s2.y - g.s1.y)) / (len * len);
-      if (dist < r && dot >= -0.1 && dot <= 1.1) return win;
-    }
-    return null;
-  }
-  _doorEndpoints(door, floor) {
-    // Returns screen-space segment + leaf geometry for a door (world meters)
-    const rad = (parseFloat(door.rotation) || 0) * Math.PI / 180;
-    const w = parseFloat(door.width) || 0.9;
-    const dx = Math.cos(rad), dy = Math.sin(rad);
-    const x = parseFloat(door.x) || 0, y = parseFloat(door.y) || 0;
-    const ax = x - dx * w / 2, ay = y - dy * w / 2;
-    const bx = x + dx * w / 2, by = y + dy * w / 2;
-    const s1 = this._worldToScreen(ax, ay, floor), s2 = this._worldToScreen(bx, by, floor);
-    return { ax, ay, bx, by, s1, s2, w, rad };
-  }
-  _doorHitTest(sx, sy, floor, radius) {
-    const r = radius || 10;
-    for (const door of (floor.doors || [])) {
-      const g = this._doorEndpoints(door, floor);
-      const len = Math.hypot(g.s2.x - g.s1.x, g.s2.y - g.s1.y) || 1;
-      const dist = Math.abs((g.s2.y - g.s1.y) * sx - (g.s2.x - g.s1.x) * sy + g.s2.x * g.s1.y - g.s2.y * g.s1.x) / len;
-      const dot = ((sx - g.s1.x) * (g.s2.x - g.s1.x) + (sy - g.s1.y) * (g.s2.y - g.s1.y)) / (len * len);
-      if (dist < r && dot >= -0.1 && dot <= 1.1) return door;
-    }
-    return null;
-  }
-  _renderFloorplanCanvas() {
-    const canvas = this.shadowRoot ? this.shadowRoot.getElementById("floorplan-canvas") : null;
-    if (!canvas || !this._floorplan) return;
-    // Crisp canvas: backing store matches displayed size * DPR, no aspect distortion.
-    const dpr = Math.min(window.devicePixelRatio || 1, 3);
-    const rect = canvas.getBoundingClientRect();
-    const cssW = Math.max(300, Math.round(rect.width || canvas.clientWidth || 800));
-    const cssH = Math.max(250, Math.round(rect.height || (cssW * 5 / 8)));
-    const wantW = Math.floor(cssW * dpr), wantH = Math.floor(cssH * dpr);
-    if (canvas.width !== wantW || canvas.height !== wantH) {
-      canvas.width = wantW;
-      canvas.height = wantH;
-      canvas.style.height = cssH + "px";
-    }
-    const ctx = canvas.getContext("2d");
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.imageSmoothingEnabled = true;
-    const floor = this._getActiveFloor();
-    if (!floor) return;
-    const w = cssW, h = cssH;
-    // Dark mode editor background (not the terrible light one)
-    ctx.fillStyle = "#14161a";
-    ctx.fillRect(0, 0, w, h);
-    ctx.lineJoin = "round"; ctx.lineCap = "round";
-    ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
-    // Draw floor bounds (dimensions constraint)
-    const fb = { x: 0, y: 0, w: 10, d: 8 };
-    try { fb.w = parseFloat(floor.width) || 10; fb.d = parseFloat(floor.depth) || 8; } catch (e) {}
-    const c00 = this._worldToScreen(0, 0, floor), cW0 = this._worldToScreen(fb.w, 0, floor), cWd = this._worldToScreen(fb.w, fb.d, floor), c0d = this._worldToScreen(0, fb.d, floor);
-    ctx.fillStyle = "rgba(255,255,255,0.03)";
-    ctx.beginPath(); ctx.moveTo(c00.x, c00.y); ctx.lineTo(cW0.x, cW0.y); ctx.lineTo(cWd.x, cWd.y); ctx.lineTo(c0d.x, c0d.y); ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = "#4a5568"; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
-    ctx.beginPath(); ctx.moveTo(c00.x, c00.y); ctx.lineTo(cW0.x, cW0.y); ctx.lineTo(cWd.x, cWd.y); ctx.lineTo(c0d.x, c0d.y); ctx.closePath(); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.strokeStyle = "#2a2e35"; ctx.lineWidth = 1;
-    const gridStep = this._floorplanScale * (this._floorplanUnits === "meters" ? 1 : 0.6096);
-    for (let x = this._floorplanOffset.x % gridStep; x < w; x += gridStep) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
-    for (let y = this._floorplanOffset.y % gridStep; y < h; y += gridStep) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
-    for (const room of (floor.rooms || [])) {
-      if (!room.point_ids || room.point_ids.length < 3) continue;
-      const pts = room.point_ids.map((id) => floor.points.find((p) => p.id === id)).filter(Boolean);
-      if (pts.length < 3) continue;
-      ctx.fillStyle = room.color ? room.color + "55" : "rgba(100,150,255,0.25)";
-      ctx.strokeStyle = room.color || "#7aa2ff"; ctx.lineWidth = 2;
-      ctx.beginPath();
-      pts.forEach((p, i) => { const s = this._worldToScreen(p.x, p.y, floor); if (i === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y); });
-      ctx.closePath(); ctx.fill(); ctx.stroke();
-      // Readable label: dark halo behind light text
-      ctx.font = "12px sans-serif";
-      const c = pts.reduce((a, p) => ({ x: a.x + p.x, y: a.y + p.y }), { x: 0, y: 0 }); c.x /= pts.length; c.y /= pts.length;
-      const sc = this._worldToScreen(c.x, c.y, floor);
-      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.85)";
-      ctx.strokeText(room.name || "", sc.x - 20, sc.y);
-      ctx.fillStyle = "#f1f3f5"; ctx.fillText(room.name || "", sc.x - 20, sc.y);
-    }
-    for (const wall of (floor.walls || [])) {
-      const p1 = floor.points.find((p) => p.id === wall.p1), p2 = floor.points.find((p) => p.id === wall.p2);
-      if (!p1 || !p2) continue;
-      const s1 = this._worldToScreen(p1.x, p1.y, floor), s2 = this._worldToScreen(p2.x, p2.y, floor);
-      if (this._selectedWallId === wall.id) { ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 4; } else { ctx.strokeStyle = "#e8eaf0"; ctx.lineWidth = 3; }
-      ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke();
-    }
-    // Doors (placeable + rotatable, no labels)
-    for (const door of (floor.doors || [])) {
-      const g = this._doorEndpoints(door, floor);
-      const isSel = this._selectedDoorId === door.id;
-      const swing = (door.swing || "right").toLowerCase();
-      // Cut opening in wall: dark gap slightly wider than wall
-      ctx.strokeStyle = "#14161a"; ctx.lineWidth = 7;
-      ctx.beginPath(); ctx.moveTo(g.s1.x, g.s1.y); ctx.lineTo(g.s2.x, g.s2.y); ctx.stroke();
-      // Frame jambs
-      ctx.strokeStyle = isSel ? "#ff9800" : "#9aa4b2"; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.moveTo(g.s1.x, g.s1.y); ctx.lineTo(g.s2.x, g.s2.y); ctx.stroke();
-      // Leaf(s)
-      const leafColor = isSel ? "#ff9800" : "#f1f3f5";
-      ctx.strokeStyle = leafColor; ctx.lineWidth = 2.5;
-      const leafLenPx = Math.hypot(g.s2.x - g.s1.x, g.s2.y - g.s1.y) || 1;
-      const ux = (g.s2.x - g.s1.x) / leafLenPx, uy = (g.s2.y - g.s1.y) / leafLenPx;
-      const drawLeaf = (hx, hy, angDeg, lenPx) => {
-        const a = angDeg * Math.PI / 180;
-        ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(hx + Math.cos(a) * lenPx, hy + Math.sin(a) * lenPx); ctx.stroke();
-        // Swing arc
-        ctx.strokeStyle = isSel ? "rgba(255,152,0,0.7)" : "rgba(241,243,245,0.45)";
-        ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
-        ctx.beginPath(); ctx.arc(hx, hy, lenPx, Math.min(a, Math.atan2(uy, ux)), Math.max(a, Math.atan2(uy, ux)), swing === "left");
-        ctx.stroke(); ctx.setLineDash([]);
-        ctx.strokeStyle = leafColor; ctx.lineWidth = 2.5;
-      };
-      const baseAng = Math.atan2(uy, ux) * 180 / Math.PI;
-      if (door.type === "Double Door") {
-        const half = leafLenPx / 2;
-        // Two leaves swinging inward
-        const a1 = baseAng + (swing === "left" ? -70 : 70);
-        const a2 = baseAng + 180 + (swing === "left" ? 70 : -70);
-        const mx = (g.s1.x + g.s2.x) / 2, my = (g.s1.y + g.s2.y) / 2;
-        ctx.beginPath(); ctx.moveTo(g.s1.x, g.s1.y); ctx.lineTo(g.s1.x + Math.cos(a1 * Math.PI / 180) * half, g.s1.y + Math.sin(a1 * Math.PI / 180) * half); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(g.s2.x, g.s2.y); ctx.lineTo(g.s2.x + Math.cos(a2 * Math.PI / 180) * half, g.s2.y + Math.sin(a2 * Math.PI / 180) * half); ctx.stroke();
-      } else if (door.type === "Garage Door") {
-        // Garage: double line + center seam, swing up = draw parallel lines
-        const nx = -uy, ny = ux;
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(g.s1.x + nx * 3, g.s1.y + ny * 3); ctx.lineTo(g.s2.x + nx * 3, g.s2.y + ny * 3); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(g.s1.x - nx * 3, g.s1.y - ny * 3); ctx.lineTo(g.s2.x - nx * 3, g.s2.y - ny * 3); ctx.stroke();
-        const mx = (g.s1.x + g.s2.x) / 2, my = (g.s1.y + g.s2.y) / 2;
-        ctx.strokeStyle = "rgba(241,243,245,0.5)"; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx + nx * (swing === "left" ? -14 : 14), my + ny * (swing === "left" ? -14 : 14)); ctx.stroke();
-      } else {
-        // Single door: hinge at one end based on swing
-        const hinge = swing === "left" ? { x: g.s1.x, y: g.s1.y } : { x: g.s2.x, y: g.s2.y };
-        const leafAng = baseAng + (swing === "left" ? -75 : 75);
-        drawLeaf(hinge.x, hinge.y, leafAng, leafLenPx);
-      }
-      if (isSel) {
-        const midx = (g.s1.x + g.s2.x) / 2, midy = (g.s1.y + g.s2.y) / 2;
-        ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(midx, midy, 12, 0, Math.PI * 2); ctx.stroke();
-      }
-    }
-    // Windows (origin = lower-left corner; cyan opening, no labels)
-    for (const win of (floor.windows || [])) {
-      const g = this._windowSeg(win, floor);
-      const isSel = this._selectedWindowId === win.id;
-      // Cut opening
-      ctx.strokeStyle = "#14161a"; ctx.lineWidth = 7;
-      ctx.beginPath(); ctx.moveTo(g.s1.x, g.s1.y); ctx.lineTo(g.s2.x, g.s2.y); ctx.stroke();
-      // Sill: double cyan lines
-      const len = Math.hypot(g.s2.x - g.s1.x, g.s2.y - g.s1.y) || 1;
-      const nx = -(g.s2.y - g.s1.y) / len, ny = (g.s2.x - g.s1.x) / len;
-      ctx.strokeStyle = isSel ? "#ff9800" : "#22d3ee"; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(g.s1.x + nx * 3, g.s1.y + ny * 3); ctx.lineTo(g.s2.x + nx * 3, g.s2.y + ny * 3); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(g.s1.x - nx * 3, g.s1.y - ny * 3); ctx.lineTo(g.s2.x - nx * 3, g.s2.y - ny * 3); ctx.stroke();
-      // End ticks
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(g.s1.x - nx * 5, g.s1.y - ny * 5); ctx.lineTo(g.s1.x + nx * 5, g.s1.y + ny * 5); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(g.s2.x - nx * 5, g.s2.y - ny * 5); ctx.lineTo(g.s2.x + nx * 5, g.s2.y + ny * 5); ctx.stroke();
-      if (isSel) {
-        const midx = (g.s1.x + g.s2.x) / 2, midy = (g.s1.y + g.s2.y) / 2;
-        ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(midx, midy, 12, 0, Math.PI * 2); ctx.stroke();
-      }
-    }
-    for (const pt of (floor.points || [])) {
-      const s = this._worldToScreen(pt.x, pt.y, floor);
-      const isSelected = this._selectedPointId === pt.id;
-      // No white tint: dark outline so text/neighbors stay readable
-      ctx.fillStyle = isSelected ? "#ff9800" : "#03a9f4";
-      ctx.beginPath(); ctx.arc(s.x, s.y, 6, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = "#0b0e13"; ctx.lineWidth = 2; ctx.stroke();
-      if (isSelected) {
-        ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(s.x, s.y, 11, 0, Math.PI * 2); ctx.stroke();
-      }
-    }
-    if (this._contextMenu && this._contextMenu.pointId) {
-      const pt = floor.points.find((p) => p.id === this._contextMenu.pointId);
-      if (pt) {
-        const s = this._worldToScreen(pt.x, pt.y, floor);
-        const dirs = [{ dx: 0, dy: -1, arrow: "↑" }, { dx: 1, dy: 0, arrow: "→" }, { dx: 0, dy: 1, arrow: "↓" }, { dx: -1, dy: 0, arrow: "←" }];
-        dirs.forEach((d) => {
-          const ax = s.x + d.dx * 40, ay = s.y + d.dy * 40;
-          ctx.fillStyle = "rgba(255,255,255,0.9)"; ctx.strokeStyle = "#03a9f4"; ctx.lineWidth = 2;
-          ctx.beginPath(); ctx.arc(ax, ay, 14, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-          ctx.fillStyle = "#03a9f4"; ctx.font = "bold 16px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(d.arrow, ax, ay);
-          ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
-        });
-      }
-    }
-    // Wall-drag preview (right-drag point to point)
-    if (this._wallDrag && this._wallDrag.moved) {
-      const from = floor.points.find((p) => p.id === this._wallDrag.fromId);
-      if (from) {
-        const s1 = this._worldToScreen(from.x, from.y, floor);
-        ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 3; ctx.setLineDash([8, 5]);
-        ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(this._wallDrag.curX, this._wallDrag.curY); ctx.stroke();
-        ctx.setLineDash([]);
-        if (this._wallDrag.hoverId) {
-          const hp = floor.points.find((p) => p.id === this._wallDrag.hoverId);
-          if (hp) {
-            const sh = this._worldToScreen(hp.x, hp.y, floor);
-            ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 2;
-            ctx.beginPath(); ctx.arc(sh.x, sh.y, 12, 0, Math.PI * 2); ctx.stroke();
-          }
-        }
-      }
-    }
-    // Room-drag selection highlight (middle-drag across points)
-    if (this._roomDrag && this._roomDrag.pointIds.length) {
-      for (const pid of this._roomDrag.pointIds) {
-        const pt = floor.points.find((p) => p.id === pid);
-        if (!pt) continue;
-        const s = this._worldToScreen(pt.x, pt.y, floor);
-        ctx.strokeStyle = "#22c55e"; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.arc(s.x, s.y, 11, 0, Math.PI * 2); ctx.stroke();
-      }
-      // Rubber line from start to cursor
-      ctx.strokeStyle = "rgba(34,197,94,0.6)"; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
-      ctx.beginPath(); ctx.moveTo(this._roomDrag.startX, this._roomDrag.startY); ctx.lineTo(this._roomDrag.curX, this._roomDrag.curY); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-  }
-  _handleFloorplanClick(e) {
-    const canvas = this.shadowRoot.getElementById("floorplan-canvas");
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    // CSS pixels (worldToScreen returns CSS px, canvas is DPR-scaled via setTransform)
-    const sx = (e.clientX - rect.left), sy = (e.clientY - rect.top);
-    const floor = this._getActiveFloor();
-    if (!floor) return;
-    if (this._contextMenu) {
-      const pt = floor.points.find((p) => p.id === this._contextMenu.pointId);
-      if (pt) {
-        const s = this._worldToScreen(pt.x, pt.y, floor);
-        const dirs = [{ dx: 0, dy: -1 }, { dx: 1, dy: 0 }, { dx: 0, dy: 1 }, { dx: -1, dy: 0 }];
-        for (const d of dirs) {
-          const ax = s.x + d.dx * 40, ay = s.y + d.dy * 40;
-          if (Math.hypot(sx - ax, sy - ay) < 16) {
-            const unitLabel = this._floorplanUnits === "meters" ? "meters" : "feet/inches (e.g. 6' 11\")";
-            const def = this._floorplanUnits === "meters" ? "2" : "6' 0\"";
-            const valStr = prompt("How many " + unitLabel + " away should the new point be placed?", def);
-            if (valStr === null) return;
-            const distM = this._parseDisplayToMeters(valStr);
-            if (isNaN(distM) || distM <= 0) { alert("Invalid distance (try 6' 11\" or 2.5)"); return; }
-            let newX = pt.x + d.dx * distM;
-            let newY = pt.y + d.dy * distM;
-            const cl = this._clampToFloor(floor, newX, newY);
-            newX = cl.x; newY = cl.y;
-            this._fpPushUndo();
-            const newId = "point_" + Date.now();
-            floor.points.push({ id: newId, x: newX, y: newY, label: "" });
-            // No auto wall (per request) - walls are created by right-dragging points together
-            this._selectedPointId = newId;
-            this._contextMenu = null;
-            this._saveFloorplan();
-            this._render();
-            this._renderFloorplanCanvas();
-            return;
-          }
-        }
-      }
-    }
-    // Window placement mode: left-click places window origin (lower-left corner)
-    if (this._placingWindow && e.button !== 2) {
-      const w = this._screenToWorld(sx, sy, floor);
-      const cl = this._clampToFloor(floor, w.x, w.y);
-      const defs = this._windowDefaults();
-      this._fpPushUndo();
-      const nid = "window_" + Date.now();
-      floor.windows = floor.windows || [];
-      floor.windows.push({
-        id: nid, x: cl.x, y: cl.y, rotation: 0,
-        width: defs.width, height: defs.height, height_from_floor: defs.height_from_floor,
-      });
-      this._selectedWindowId = nid;
-      this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null;
-      this._placingWindow = false;
-      this._placingDoorType = null;
-      this._saveFloorplan();
-      this._render();
-      this._renderFloorplanCanvas();
-      return;
-    }
-    // Door placement mode: left-click places a door of the pending type
-    if (this._placingDoorType && e.button !== 2) {
-      const w = this._screenToWorld(sx, sy, floor);
-      const cl = this._clampToFloor(floor, w.x, w.y);
-      const defaults = this._doorDefaults();
-      this._fpPushUndo();
-      const nid = "door_" + Date.now();
-      floor.doors = floor.doors || [];
-      floor.doors.push({
-        id: nid,
-        type: this._placingDoorType,
-        x: cl.x, y: cl.y,
-        rotation: 0,
-        width: defaults[this._placingDoorType] || 0.9,
-        swing: this._placingDoorType === "Double Door" ? "left" : (this._placingDoorType === "Garage Door" ? "up" : "right"),
-      });
-      this._selectedDoorId = nid;
-      this._selectedPointId = null; this._selectedWallId = null; this._selectedWindowId = null;
-      this._placingDoorType = null;
-      this._placingWindow = false;
-      this._saveFloorplan();
-      this._render();
-      this._renderFloorplanCanvas();
-      return;
-    }
-    for (const pt of floor.points) {
-      const s = this._worldToScreen(pt.x, pt.y, floor);
-      if (Math.hypot(sx - s.x, sy - s.y) < 12) {
-        if (e.button === 2) {
-          this._contextMenu = { x: sx, y: sy, pointId: pt.id };
-          this._selectedPointId = pt.id;
-          this._selectedDoorId = null;
-          this._renderFloorplanCanvas();
-          return;
-        } else {
-          this._selectedPointId = pt.id;
-          this._selectedWallId = null;
-          this._selectedDoorId = null;
-          this._selectedWindowId = null;
-          this._contextMenu = null;
-          this._renderFloorplanCanvas();
-          return;
-        }
-      }
-    }
-    // Doors (select before walls so small targets win over wall lines)
-    {
-      const hit = this._doorHitTest(sx, sy, floor, 10);
-      if (hit) {
-        this._selectedDoorId = hit.id;
-        this._selectedPointId = null; this._selectedWallId = null; this._selectedWindowId = null; this._contextMenu = null;
-        this._placingDoorType = null; this._placingWindow = false;
-        this._render();
-        this._renderFloorplanCanvas();
-        return;
-      }
-    }
-    // Windows
-    {
-      const hit = this._windowHitTest(sx, sy, floor, 10);
-      if (hit) {
-        this._selectedWindowId = hit.id;
-        this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._contextMenu = null;
-        this._placingDoorType = null; this._placingWindow = false;
-        this._render();
-        this._renderFloorplanCanvas();
-        return;
-      }
-    }
-    for (const wall of floor.walls) {
-      const p1 = floor.points.find((p) => p.id === wall.p1), p2 = floor.points.find((p) => p.id === wall.p2);
-      if (!p1 || !p2) continue;
-      const s1 = this._worldToScreen(p1.x, p1.y, floor), s2 = this._worldToScreen(p2.x, p2.y, floor);
-      const len = Math.hypot(s2.x - s1.x, s2.y - s1.y) || 1;
-      const dist = Math.abs((s2.y - s1.y) * sx - (s2.x - s1.x) * sy + s2.x * s1.y - s2.y * s1.x) / len;
-      const dot = ((sx - s1.x) * (s2.x - s1.x) + (sy - s1.y) * (s2.y - s1.y)) / (len * len);
-      if (dist < 10 && dot >= 0 && dot <= 1) {
-        this._selectedWallId = wall.id; this._selectedPointId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._contextMenu = null; this._renderFloorplanCanvas(); return;
-      }
-    }
-    this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._contextMenu = null;
-    if (this._placingDoorType || this._placingWindow) { this._placingDoorType = null; this._placingWindow = false; this._render(); }
-    this._renderFloorplanCanvas();
-  }
-  _fpPushUndo() {
-    try {
-      this._fpUndo = this._fpUndo || [];
-      this._fpRedo = this._fpRedo || [];
-      this._fpUndo.push(JSON.stringify(this._floorplan));
-      if (this._fpUndo.length > 50) this._fpUndo.shift();
-      this._fpRedo = [];
-    } catch (e) {}
-  }
-  _fpUndoDo() {
-    if (!this._fpUndo || !this._fpUndo.length) return;
-    try {
-      this._fpRedo = this._fpRedo || [];
-      this._fpRedo.push(JSON.stringify(this._floorplan));
-      const prev = this._fpUndo.pop();
-      this._floorplan = JSON.parse(prev);
-      const f = this._getActiveFloor();
-      if (f && !f.points.find((p) => p.id === this._selectedPointId)) this._selectedPointId = null;
-      if (f && !(f.doors || []).find((d) => d.id === this._selectedDoorId)) this._selectedDoorId = null;
-      if (f && !(f.windows || []).find((w) => w.id === this._selectedWindowId)) this._selectedWindowId = null;
-      this._saveFloorplan();
-      this._render();
-      this._renderFloorplanCanvas();
-    } catch (e) {}
-  }
-  _fpRedoDo() {
-    if (!this._fpRedo || !this._fpRedo.length) return;
-    try {
-      this._fpUndo = this._fpUndo || [];
-      this._fpUndo.push(JSON.stringify(this._floorplan));
-      const nxt = this._fpRedo.pop();
-      this._floorplan = JSON.parse(nxt);
-      this._saveFloorplan();
-      this._render();
-      this._renderFloorplanCanvas();
-    } catch (e) {}
-  }
-  _handleFloorplanDblClick(e) {
-    const canvas = this.shadowRoot.getElementById("floorplan-canvas");
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const sx = (e.clientX - rect.left), sy = (e.clientY - rect.top);
-    const floor = this._getActiveFloor();
-    if (!floor) return;
-    for (const pt of floor.points) {
-      const s = this._worldToScreen(pt.x, pt.y, floor);
-      if (Math.hypot(sx - s.x, sy - s.y) < 12) {
-        const unitLabel = this._floorplanUnits === "meters" ? "meters" : "feet/inches (e.g. 6' 11\")";
-        const xs = prompt("New X (" + unitLabel + ")?", this._formatMetersForInput(pt.x));
-        if (xs === null) return;
-        const ys = prompt("New Y (" + unitLabel + ")?", this._formatMetersForInput(pt.y));
-        if (ys === null) return;
-        const xvm = this._parseDisplayToMeters(xs), yvm = this._parseDisplayToMeters(ys);
-        if (isNaN(xvm) || isNaN(yvm)) { alert("Invalid position (try 6' 11\" or 2.5)"); return; }
-        this._fpPushUndo();
-        const cl = this._clampToFloor(floor, xvm, yvm);
-        pt.x = cl.x;
-        pt.y = cl.y;
-        this._saveFloorplan();
-        this._renderFloorplanCanvas();
-        return;
-      }
-    }
-  }
-  _fpPointAt(sx, sy, floor, radius) {
-    const r = radius || 12;
-    for (const pt of (floor.points || [])) {
-      const s = this._worldToScreen(pt.x, pt.y, floor);
-      if (Math.hypot(sx - s.x, sy - s.y) < r) return pt;
-    }
-    return null;
-  }
-  _handleFloorplanMouseDown(e) {
-    const canvas = this.shadowRoot.getElementById("floorplan-canvas");
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const sx = (e.clientX - rect.left), sy = (e.clientY - rect.top);
-    const floor = this._getActiveFloor();
-    if (!floor) return;
-    if (e.button === 2) {
-      // Right-drag from a point to create a wall on release
-      const pt = this._fpPointAt(sx, sy, floor, 12);
-      if (pt) {
-        this._wallDrag = { fromId: pt.id, curX: sx, curY: sy, moved: false, startX: sx, startY: sy };
-        e.preventDefault();
-        return;
-      }
-      return;
-    }
-    if (e.button === 1) {
-      // Middle-drag across points to create a room on release
-      e.preventDefault();
-      const hit = this._fpPointAt(sx, sy, floor, 14);
-      this._roomDrag = { pointIds: [], seen: {}, startX: sx, startY: sy, curX: sx, curY: sy, moved: false };
-      if (hit && !this._roomDrag.seen[hit.id]) { this._roomDrag.seen[hit.id] = true; this._roomDrag.pointIds.push(hit.id); }
-      return;
-    }
-    if (e.button !== 0) return;
-    // No point dragging (per request) - only pan on empty drag
-    this._floorplanPanning = true;
-    this._floorplanPanStart = { x: e.clientX, y: e.clientY, ox: this._floorplanOffset.x, oy: this._floorplanOffset.y };
-  }
-  _handleFloorplanMouseMove(e) {
-    const canvas = this.shadowRoot.getElementById("floorplan-canvas");
-    if (!canvas) return;
-    const floor = this._getActiveFloor();
-    if (!floor) return;
-    if (this._wallDrag) {
-      const rect = canvas.getBoundingClientRect();
-      const sx = (e.clientX - rect.left), sy = (e.clientY - rect.top);
-      if (Math.hypot(sx - this._wallDrag.startX, sy - this._wallDrag.startY) > 5) this._wallDrag.moved = true;
-      this._wallDrag.curX = sx; this._wallDrag.curY = sy;
-      // Hover target highlight
-      const hov = this._fpPointAt(sx, sy, floor, 12);
-      this._wallDrag.hoverId = hov && hov.id !== this._wallDrag.fromId ? hov.id : null;
-      this._renderFloorplanCanvas();
-      return;
-    }
-    if (this._roomDrag) {
-      const rect = canvas.getBoundingClientRect();
-      const sx = (e.clientX - rect.left), sy = (e.clientY - rect.top);
-      if (Math.hypot(sx - this._roomDrag.startX, sy - this._roomDrag.startY) > 5) this._roomDrag.moved = true;
-      this._roomDrag.curX = sx; this._roomDrag.curY = sy;
-      const hit = this._fpPointAt(sx, sy, floor, 14);
-      if (hit && !this._roomDrag.seen[hit.id]) {
-        this._roomDrag.seen[hit.id] = true;
-        this._roomDrag.pointIds.push(hit.id);
-        this._renderFloorplanCanvas();
-      } else if (this._roomDrag.moved) {
-        this._renderFloorplanCanvas();
-      }
-      return;
-    }
-    if (this._floorplanPanning && this._floorplanPanStart) {
-      this._floorplanOffset.x = this._floorplanPanStart.ox + (e.clientX - this._floorplanPanStart.x);
-      this._floorplanOffset.y = this._floorplanPanStart.oy + (e.clientY - this._floorplanPanStart.y);
-      this._renderFloorplanCanvas();
-    }
-  }
-  _handleFloorplanMouseUp(e) {
-    const canvas = this.shadowRoot.getElementById("floorplan-canvas");
-    const floor = this._getActiveFloor();
-    if (this._wallDrag && floor) {
-      const wd = this._wallDrag;
-      this._wallDrag = null;
-      if (e && e.button !== undefined && e.button !== 2) { this._renderFloorplanCanvas(); return; }
-      if (wd.moved && canvas) {
-        const rect = canvas.getBoundingClientRect();
-        const sx = (e.clientX - rect.left), sy = (e.clientY - rect.top);
-        const target = this._fpPointAt(sx, sy, floor, 14);
-        if (target && target.id !== wd.fromId) {
-          const exists = (floor.walls || []).some((w) => (w.p1 === wd.fromId && w.p2 === target.id) || (w.p1 === target.id && w.p2 === wd.fromId));
-          if (!exists) {
-            this._fpPushUndo();
-            floor.walls.push({ id: "wall_" + Date.now(), p1: wd.fromId, p2: target.id });
-            this._selectedWallId = floor.walls[floor.walls.length - 1].id;
-            this._selectedPointId = null;
-            this._suppressContextMenu = true;
-            this._saveFloorplan();
-            this._render();
-            this._renderFloorplanCanvas();
-            return;
-          }
-          this._suppressContextMenu = true;
-        }
-      }
-      // Not a drag (simple right-click handled in click handler for arrows)
-      this._renderFloorplanCanvas();
-      return;
-    }
-    if (this._roomDrag && floor) {
-      const rd = this._roomDrag;
-      this._roomDrag = null;
-      if (e && e.button !== undefined && e.button !== 1) { this._renderFloorplanCanvas(); return; }
-      if (rd.pointIds.length >= 3) {
-        const name = prompt("Room name?", "Room " + ((floor.rooms || []).length + 1));
-        if (name) {
-          this._fpPushUndo();
-          floor.rooms.push({ id: "room_" + Date.now(), name: name, point_ids: [...rd.pointIds], color: "#6496ff" });
-          this._saveFloorplan();
-          this._render();
-          this._renderFloorplanCanvas();
-          return;
-        }
-      } else if (rd.moved && rd.pointIds.length > 0) {
-        alert("Need 3+ points for a room (middle-drag across points)");
-      }
-      this._renderFloorplanCanvas();
-      return;
-    }
-    if (this._floorplanPanning) { this._floorplanPanning = false; this._floorplanPanStart = null; }
-  }
-  _handleFloorplanKeyDown(e) {
-    const isFp = this._activeTab === "floorplan";
-    if (!isFp) return;
-    if (e.key === "Escape" && (this._placingDoorType || this._placingWindow)) {
-      this._placingDoorType = null;
-      this._placingWindow = false;
-      this._render(); this._renderFloorplanCanvas();
-      return;
-    }
-    const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) {
-      e.preventDefault();
-      this._fpUndoDo();
-      return;
-    }
-    if (mod && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) {
-      e.preventDefault();
-      this._fpRedoDo();
-      return;
-    }
-    if (mod && e.key.toLowerCase() === "c") {
-      const floor = this._getActiveFloor();
-      if (!floor) return;
-      // Copy selected point, wall, door, or window
-      if (this._selectedWindowId) {
-        const w = (floor.windows || []).find((ww) => ww.id === this._selectedWindowId);
-        if (w) { this._fpClipboard = { kind: "window", data: JSON.parse(JSON.stringify(w)) }; }
-      } else if (this._selectedDoorId) {
-        const d = (floor.doors || []).find((dd) => dd.id === this._selectedDoorId);
-        if (d) { this._fpClipboard = { kind: "door", data: JSON.parse(JSON.stringify(d)) }; }
-      } else if (this._selectedPointId) {
-        const pt = floor.points.find((p) => p.id === this._selectedPointId);
-        if (pt) { this._fpClipboard = { kind: "point", data: JSON.parse(JSON.stringify(pt)) }; }
-      } else if (this._selectedWallId) {
-        const w = (floor.walls || []).find((ww) => ww.id === this._selectedWallId);
-        if (w) { this._fpClipboard = { kind: "wall", data: JSON.parse(JSON.stringify(w)) }; }
-      }
-      return;
-    }
-    if (mod && e.key.toLowerCase() === "v") {
-      const floor = this._getActiveFloor();
-      if (!floor || !this._fpClipboard) return;
-      e.preventDefault();
-      this._fpPushUndo();
-      if (this._fpClipboard.kind === "point") {
-        const src = this._fpClipboard.data;
-        const nid = "point_" + Date.now();
-        const cl = this._clampToFloor(floor, (src.x || 0) + 0.5, (src.y || 0) + 0.5);
-        floor.points.push({ id: nid, x: cl.x, y: cl.y, label: "" });
-        this._selectedPointId = nid;
-      } else if (this._fpClipboard.kind === "wall") {
-        const src = this._fpClipboard.data;
-        // Paste wall requires its points; duplicate points too with offset
-        const p1 = floor.points.find((p) => p.id === src.p1), p2 = floor.points.find((p) => p.id === src.p2);
-        if (p1 && p2) {
-          const n1 = "point_" + Date.now(), n2 = "point_" + (Date.now() + 1);
-          const c1 = this._clampToFloor(floor, p1.x + 0.5, p1.y + 0.5);
-          const c2 = this._clampToFloor(floor, p2.x + 0.5, p2.y + 0.5);
-          floor.points.push({ id: n1, x: c1.x, y: c1.y, label: "" });
-          floor.points.push({ id: n2, x: c2.x, y: c2.y, label: "" });
-          floor.walls.push({ id: "wall_" + Date.now(), p1: n1, p2: n2 });
-        }
-      } else if (this._fpClipboard.kind === "door") {
-        const src = this._fpClipboard.data;
-        const nid = "door_" + Date.now();
-        const cl = this._clampToFloor(floor, (parseFloat(src.x) || 0) + 0.5, (parseFloat(src.y) || 0) + 0.5);
-        floor.doors = floor.doors || [];
-        floor.doors.push({ id: nid, type: src.type || "Door", x: cl.x, y: cl.y, rotation: parseFloat(src.rotation) || 0, width: parseFloat(src.width) || 0.9, swing: src.swing || "right" });
-        this._selectedDoorId = nid;
-      } else if (this._fpClipboard.kind === "window") {
-        const src = this._fpClipboard.data;
-        const nid = "window_" + Date.now();
-        const cl = this._clampToFloor(floor, (parseFloat(src.x) || 0) + 0.5, (parseFloat(src.y) || 0) + 0.5);
-        floor.windows = floor.windows || [];
-        floor.windows.push({ id: nid, x: cl.x, y: cl.y, rotation: parseFloat(src.rotation) || 0, width: parseFloat(src.width) || 1.2, height: parseFloat(src.height) || 1.2, height_from_floor: parseFloat(src.height_from_floor) || 0.9 });
-        this._selectedWindowId = nid;
-      }
-      this._saveFloorplan();
-      this._render();
-      this._renderFloorplanCanvas();
-      return;
-    }
-    if ((e.key === "Delete" || e.key === "Backspace") && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement ? document.activeElement.tagName : "")) {
-      const floor = this._getActiveFloor();
-      if (!floor) return;
-      if (this._selectedWindowId) {
-        this._fpPushUndo();
-        floor.windows = (floor.windows || []).filter((w) => w.id !== this._selectedWindowId);
-        this._selectedWindowId = null;
-        this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
-      } else if (this._selectedDoorId) {
-        this._fpPushUndo();
-        floor.doors = (floor.doors || []).filter((d) => d.id !== this._selectedDoorId);
-        this._selectedDoorId = null;
-        this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
-      } else if (this._selectedPointId) {
-        this._fpPushUndo();
-        const pid = this._selectedPointId;
-        floor.points = floor.points.filter((pp) => pp.id !== pid);
-        floor.walls = (floor.walls || []).filter((w) => w.p1 !== pid && w.p2 !== pid);
-        (floor.rooms || []).forEach((r) => { r.point_ids = (r.point_ids || []).filter((id) => id !== pid); });
-        this._selectedPointId = null;
-        this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
-      } else if (this._selectedWallId) {
-        this._fpPushUndo();
-        floor.walls = (floor.walls || []).filter((w) => w.id !== this._selectedWallId);
-        this._selectedWallId = null;
-        this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
-      }
-    }
-  }
-  _handleFloorplanWheel(e) {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    this._floorplanScale *= delta;
-    this._floorplanScale = Math.max(5, Math.min(200, this._floorplanScale));
-    this._renderFloorplanCanvas();
-  }
-  _isoProject(x, y, z, cx, cy, s, zStep) {
-    const cos30 = 0.8660254, sin30 = 0.5;
-    return { x: cx + (x - y) * cos30 * s, y: cy + (x + y) * sin30 * s - z * zStep };
-  }
+  // Home 3D view lives in modules/home3d.js (loaded via _ensureMods).
   _renderHomeIsoCanvas() {
-    const canvas = this.shadowRoot ? this.shadowRoot.getElementById("home-iso-canvas") : null;
-    if (!canvas) return;
-    if (!this._floorplan || !this._floorplan.floors || !this._floorplan.floors.length) {
-      // Still ensure subscription so home populates
-      if (this._hass && !this._floorplan && !this._floorplanLoading) this._fetchFloorplanOnce();
-      return;
-    }
-    const dpr = Math.min(window.devicePixelRatio || 1, 3);
-    const rect = canvas.getBoundingClientRect();
-    const cssW = Math.max(300, Math.round(rect.width || 800));
-    const cssH = 420;
-    if (canvas.width !== Math.floor(cssW * dpr) || canvas.height !== Math.floor(cssH * dpr)) {
-      canvas.width = Math.floor(cssW * dpr);
-      canvas.height = Math.floor(cssH * dpr);
-      canvas.style.height = cssH + "px";
-    }
-    const ctx = canvas.getContext("2d");
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = "#14161a";
-    ctx.fillRect(0, 0, cssW, cssH);
-    const floors = [...this._floorplan.floors].sort((a, b) => (a.level || 0) - (b.level || 0));
-    // Fit scale to largest floor
-    let maxDim = 10;
-    for (const f of floors) maxDim = Math.max(maxDim, parseFloat(f.width) || 10, parseFloat(f.depth) || 8);
-    const s = Math.min(cssW, cssH * 1.6) / (maxDim * 2.2);
-    const cx = cssW / 2, cy = cssH / 2 + (floors.length * 18) / 2;
-    const zStep = 52;
-    // Draw bottom-up so upper floors overlay correctly? Actually draw top last for visibility
-    floors.forEach((floor, fi) => {
-      const z = (floor.level || fi);
-      const proj = (x, y) => this._isoProject(x, y, z, cx, cy, s, zStep);
-      // Floor base
-      const w = parseFloat(floor.width) || 10, d = parseFloat(floor.depth) || 8;
-      const c00 = proj(0, 0), cW0 = proj(w, 0), cWd = proj(w, d), c0d = proj(0, d);
-      ctx.fillStyle = "rgba(255,255,255,0.04)";
-      ctx.strokeStyle = "#4a5568"; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(c00.x, c00.y); ctx.lineTo(cW0.x, cW0.y); ctx.lineTo(cWd.x, cWd.y); ctx.lineTo(c0d.x, c0d.y); ctx.closePath(); ctx.fill(); ctx.stroke();
-      // Rooms
-      for (const room of (floor.rooms || [])) {
-        if (!room.point_ids || room.point_ids.length < 3) continue;
-        const pts = room.point_ids.map((id) => floor.points.find((p) => p.id === id)).filter(Boolean);
-        if (pts.length < 3) continue;
-        ctx.fillStyle = room.color ? room.color + "66" : "rgba(100,150,255,0.3)";
-        ctx.strokeStyle = room.color || "#7aa2ff"; ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        pts.forEach((p, i) => { const q = proj(p.x, p.y); if (i === 0) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y); });
-        ctx.closePath(); ctx.fill(); ctx.stroke();
-      }
-      // Walls
-      for (const wall of (floor.walls || [])) {
-        const p1 = floor.points.find((p) => p.id === wall.p1), p2 = floor.points.find((p) => p.id === wall.p2);
-        if (!p1 || !p2) continue;
-        const q1 = proj(p1.x, p1.y), q2 = proj(p2.x, p2.y);
-        ctx.strokeStyle = "#e8eaf0"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(q1.x, q1.y); ctx.lineTo(q2.x, q2.y); ctx.stroke();
-      }
-      // Doors
-      for (const door of (floor.doors || [])) {
-        const rad = (parseFloat(door.rotation) || 0) * Math.PI / 180;
-        const w = parseFloat(door.width) || 0.9;
-        const dx = Math.cos(rad), dy = Math.sin(rad);
-        const x = parseFloat(door.x) || 0, y = parseFloat(door.y) || 0;
-        const q1 = proj(x - dx * w / 2, y - dy * w / 2), q2 = proj(x + dx * w / 2, y + dy * w / 2);
-        ctx.strokeStyle = "#fbbf24"; ctx.lineWidth = 2.5;
-        ctx.beginPath(); ctx.moveTo(q1.x, q1.y); ctx.lineTo(q2.x, q2.y); ctx.stroke();
-      }
-      // Windows (cyan, origin = lower-left corner)
-      for (const win of (floor.windows || [])) {
-        const rad = (parseFloat(win.rotation) || 0) * Math.PI / 180;
-        const w = parseFloat(win.width) || 1.2;
-        const dx = Math.cos(rad), dy = Math.sin(rad);
-        const x = parseFloat(win.x) || 0, y = parseFloat(win.y) || 0;
-        const q1 = proj(x, y), q2 = proj(x + dx * w, y + dy * w);
-        ctx.strokeStyle = "#22d3ee"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(q1.x, q1.y); ctx.lineTo(q2.x, q2.y); ctx.stroke();
-      }
-      // Points (no labels)
-      for (const pt of (floor.points || [])) {
-        const q = proj(pt.x, pt.y);
-        ctx.fillStyle = "#03a9f4";
-        ctx.beginPath(); ctx.arc(q.x, q.y, 3.5, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = "#0b0e13"; ctx.lineWidth = 1.5; ctx.stroke();
-      }
-      // Floor label with halo
-      ctx.font = "12px sans-serif";
-      const lp = proj(0, 0);
-      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.85)";
-      const label = (floor.name || "") + " (L" + (floor.level || 0) + ")";
-      ctx.strokeText(label, lp.x - 30, lp.y - 10);
-      ctx.fillStyle = "#f1f3f5"; ctx.fillText(label, lp.x - 30, lp.y - 10);
-    });
-  }
-  _renderFloorplan() {
-    if (this._floorplanLoading) return `<p class="loading">Loading floorplan…</p>`;
-    if (this._floorplanError) return `<p class="error">Error: ${this._esc(this._floorplanError)}</p><p><button id="floorplan-retry">Retry</button></p>`;
-    if (!this._floorplan || !this._floorplan.floors) return `<p>No floorplan.</p>`;
-    const floor = this._getActiveFloor();
-    if (!floor) return `<p>No active floor.</p>`;
-    const unitsSel = `<select id="floorplan-units"><option value="meters" ${this._floorplanUnits === "meters" ? "selected" : ""}>Meters</option><option value="feet_inches" ${this._floorplanUnits === "feet_inches" ? "selected" : ""}>Feet/Inches</option></select>`;
-    const floorTabs = this._floorplan.floors.map((f) => `<button data-floor="${this._esc(f.id)}" style="padding:6px 12px; margin:2px; border:1px solid #ccc; border-radius:4px; background:${f.id === this._selectedFloorId ? "#03a9f4" : "#fafafa"}; color:${f.id === this._selectedFloorId ? "white" : "#333"}; cursor:pointer;">${this._esc(f.name)} (L${f.level})</button>`).join("");
-    const wallsHtml = (floor.walls || []).map((w) => {
-      const p1 = floor.points.find((p) => p.id === w.p1), p2 = floor.points.find((p) => p.id === w.p2);
-      const len = p1 && p2 ? Math.hypot(p1.x - p2.x, p1.y - p2.y) : 0;
-      return `<tr><td>${this._esc(this._metersToDisplay(len))}</td><td><button data-del-wall="${this._esc(w.id)}">Delete</button></td></tr>`;
-    }).join("") || `<tr><td colspan="2"><em>No walls</em></td></tr>`;
-    const roomsHtml = (floor.rooms || []).map((r) => `<tr><td>${this._esc(r.name)}</td><td>${this._esc(String((r.point_ids || []).length))} pts</td><td><input type="color" value="${this._esc(r.color || "#6496ff")}" data-room-color="${this._esc(r.id)}" style="width:40px;"></td><td><button data-del-room="${this._esc(r.id)}">Delete</button></td></tr>`).join("") || `<tr><td colspan="4"><em>No rooms</em></td></tr>`;
-    const doorsHtml = ((floor.doors || []).map((dr) => `<tr><td>${this._esc(dr.type)}</td><td>${this._esc(this._formatMetersForInput(dr.width || 0.9))}</td><td>${this._esc(String(Math.round(((parseFloat(dr.rotation) || 0)))))}°</td><td>${this._esc(dr.swing || "")}</td><td><button data-del-door="${this._esc(dr.id)}">Delete</button></td></tr>`).join("") || `<tr><td colspan="5"><em>No doors - click Door / Double / Garage then click canvas to place</em></td></tr>`);
-    const selDoor = this._selectedDoorId ? (floor.doors || []).find((d) => d.id === this._selectedDoorId) : null;
-    const doorEditHtml = selDoor ? `
-      <div style="border:1px solid #ff9800; padding:10px; border-radius:6px; margin-top:8px;">
-        <h4>Selected Door (${this._esc(selDoor.type)})</h4>
-        <label>X: <input id="door-x" type="text" value="${this._esc(this._formatMetersForInput(selDoor.x || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-        <label>Y: <input id="door-y" type="text" value="${this._esc(this._formatMetersForInput(selDoor.y || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-        <label>Rotation (deg): <input id="door-rot" type="number" step="5" value="${Math.round(parseFloat(selDoor.rotation) || 0)}" style="width:80px"></label>
-        <button id="door-rot-left" title="Rotate -15°">⟲</button><button id="door-rot-right" title="Rotate +15°">⟳</button><br>
-        <label>Size: <input id="door-width" type="text" value="${this._esc(this._formatMetersForInput(selDoor.width || 0.9))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-        <label>Swing: <select id="door-swing">
-          <option value="left" ${selDoor.swing === "left" ? "selected" : ""}>left</option>
-          <option value="right" ${selDoor.swing === "right" ? "selected" : ""}>right</option>
-          <option value="up" ${selDoor.swing === "up" ? "selected" : ""}>up</option>
-          <option value="none" ${selDoor.swing === "none" ? "selected" : ""}>none</option>
-        </select></label><br>
-        <button id="door-save">Save Door</button>
-      </div>` : (this._placingDoorType ? `<p><em>Placing ${this._esc(this._placingDoorType)} - click on canvas to place (Esc to cancel).</em> <button id="door-cancel-place">Cancel</button></p>` : "");
-    const dd = this._doorDefaults();
-    const windowsHtml = (((floor.windows || []).map((wn) => `<tr><td>${this._esc(this._formatMetersForInput(wn.width || 1.2))} × ${this._esc(this._formatMetersForInput(wn.height || 1.2))}</td><td>${this._esc(this._formatMetersForInput(wn.height_from_floor || 0.9))}</td><td>${this._esc(String(Math.round(parseFloat(wn.rotation) || 0)))}°</td><td><button data-del-window="${this._esc(wn.id)}">Delete</button></td></tr>`).join("")) || `<tr><td colspan="4"><em>No windows - click Add Window then click canvas (origin = lower-left corner)</em></td></tr>`);
-    const selWin = this._selectedWindowId ? (floor.windows || []).find((w) => w.id === this._selectedWindowId) : null;
-    const windowEditHtml = selWin ? `
-      <div style="border:1px solid #22d3ee; padding:10px; border-radius:6px; margin-top:8px;">
-        <h4>Selected Window (origin = lower-left corner)</h4>
-        <label>X: <input id="window-x" type="text" value="${this._esc(this._formatMetersForInput(selWin.x || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-        <label>Y: <input id="window-y" type="text" value="${this._esc(this._formatMetersForInput(selWin.y || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-        <label>Width: <input id="window-width" type="text" value="${this._esc(this._formatMetersForInput(selWin.width || 1.2))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-        <label>Height: <input id="window-height" type="text" value="${this._esc(this._formatMetersForInput(selWin.height || 1.2))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-        <label>Height from floor: <input id="window-sill" type="text" value="${this._esc(this._formatMetersForInput(selWin.height_from_floor || 0.9))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-        <label>Rotation (deg): <input id="window-rot" type="number" step="5" value="${Math.round(parseFloat(selWin.rotation) || 0)}" style="width:80px"></label>
-        <button id="window-rot-left" title="Rotate -15°">⟲</button><button id="window-rot-right" title="Rotate +15°">⟳</button><br>
-        <button id="window-save">Save Window</button>
-      </div>` : (this._placingWindow ? `<p><em>Placing window - click on canvas for lower-left corner origin (Esc to cancel).</em> <button id="window-cancel-place">Cancel</button></p>` : "");
-    const wd2 = this._windowDefaults();
-    const windowDefaultsHtml = `
-      <div style="border:1px solid #eee; padding:10px; border-radius:6px; margin-top:12px;"><h4>Default Window (used for new windows)</h4>
-      <label>Width: <input id="def-win-w" type="text" value="${this._esc(this._formatMetersForInput(wd2.width))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-      <label>Height: <input id="def-win-h" type="text" value="${this._esc(this._formatMetersForInput(wd2.height))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-      <label>Height from floor: <input id="def-win-sill" type="text" value="${this._esc(this._formatMetersForInput(wd2.height_from_floor))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-      <button id="window-defs-save">Save Defaults</button></div>`;
-    const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected point at (${this._formatMetersForInput(pt.x)}, ${this._formatMetersForInput(pt.y)}) - double-click to edit` : ""; })() : (this._selectedWindowId ? `Window selected - edit below` : (this._selectedDoorId ? `Door selected - edit below` : (this._selectedWallId ? `Wall selected` : "Left-click selects, double-click point to edit position, right-click point for 4 arrows"))); const doorDefaultsHtml = `
-      <div style="border:1px solid #eee; padding:10px; border-radius:6px; margin-top:12px;"><h4>Default Door Sizes (used for new doors)</h4>
-      <label>Door: <input id="def-door" type="text" value="${this._esc(this._formatMetersForInput(dd["Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-      <label>Double Door: <input id="def-double" type="text" value="${this._esc(this._formatMetersForInput(dd["Double Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-      <label>Garage Door: <input id="def-garage" type="text" value="${this._esc(this._formatMetersForInput(dd["Garage Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
-      <button id="door-defs-save">Save Defaults</button></div>`;
-    return `
-      <div class="card">
-        <h2>Floor Plan - ${this._esc(floor.name)}</h2>
-        <p>Multi-floor editor. Start point at 0,0. Units: ${unitsSel} (internal meters). Right-click point → 4 arrows → click arrow → dialog asks distance. Right-drag point to point to create a wall. Middle-drag across points to create a room. Left-click selects, double-click point to edit position. Drag empty to pan, wheel to zoom. Ctrl+Z undo, Ctrl+Y redo, Ctrl+C / Ctrl+V copy-paste.</p>
-        <div style="margin:8px 0; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-          <button id="floor-add">Add Floor</button>
-          <button id="floor-rename">Rename Floor</button>
-          <button id="floor-delete">Delete Floor</button>
-          <label>Level: <input id="floor-level" type="number" value="${floor.level}" style="width:60px"></label>
-        </div>
-        <div style="display:flex; gap:4px; margin:8px 0; flex-wrap:wrap;">${floorTabs}</div>
-        <div id="floorplan-wrap" style="border:1px solid #333; border-radius:8px; overflow:hidden; background:#14161a; aspect-ratio: 8/5; max-height:520px;">
-          <canvas id="floorplan-canvas" width="800" height="500" style="display:block; cursor:crosshair; width:100%; height:100%; background:#14161a;"></canvas>
-        </div>
-        <p><small>${selectedInfo} | Scale: ${this._floorplanScale.toFixed(1)}px/m</small></p>
-        <div style="margin-top:12px; border:1px solid #eee; padding:10px; border-radius:6px;">
-          <h3>Doors</h3>
-          <p>
-            <button id="door-add-Door">Add Door</button>
-            <button id="door-add-Double">Add Double Door</button>
-            <button id="door-add-Garage">Add Garage Door</button>
-          </p>
-          <table><thead><tr><th>Type</th><th>Size</th><th>Rotation</th><th>Swing</th><th>Action</th></tr></thead><tbody>${doorsHtml}</tbody></table>
-          ${doorEditHtml}
-          ${doorDefaultsHtml}
-        </div>
-        <div style="margin-top:12px; border:1px solid #eee; padding:10px; border-radius:6px;">
-          <h3>Windows</h3>
-          <p><button id="window-add">Add Window</button> <small>origin = lower-left corner, then edit size/height/sill/rotation</small></p>
-          <table><thead><tr><th>Size (W × H)</th><th>Sill Height</th><th>Rotation</th><th>Action</th></tr></thead><tbody>${windowsHtml}</tbody></table>
-          ${windowEditHtml}
-          ${windowDefaultsHtml}
-        </div>
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px;">
-          <div><h3>Walls</h3><p><button id="wall-add">Add Wall (selected + last)</button> <small>or right-drag point to point</small></p><table><thead><tr><th>Length</th><th>Action</th></tr></thead><tbody>${wallsHtml}</tbody></table></div>
-          <div><h3>Rooms</h3><p><button id="room-add">Add Room (all points)</button> <small>or middle-drag across points</small></p><table><thead><tr><th>Name</th><th>Points</th><th>Color</th><th>Action</th></tr></thead><tbody>${roomsHtml}</tbody></table></div>
-        </div>
-        <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:16px;">
-          <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Floor Dimensions (constrains points)</h4><label>Width: <input id="floor-width" type="text" value="${this._esc(this._formatMetersForInput(floor.width || 10))}" placeholder="${this._floorplanUnits === "meters" ? "10.00" : "32' 10.0\" "}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in (e.g. 32' 10\")"}</small><br><label>Depth: <input id="floor-depth" type="text" value="${this._esc(this._formatMetersForInput(floor.depth || 8))}" placeholder="${this._floorplanUnits === "meters" ? "8.00" : "26' 3\" "}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br><label>Height: <input id="floor-height" type="text" value="${this._esc(this._formatMetersForInput(floor.height || 3))}" placeholder="${this._floorplanUnits === "meters" ? "3.00" : "9' 10\" "}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br><button id="dims-save">Save Dimensions</button><h4 style="margin-top:12px;">Floor Alignment</h4><label>Offset X: <input id="align-x" type="text" value="${this._esc(this._formatMetersForInput(floor.offset_x || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br><label>Offset Y: <input id="align-y" type="text" value="${this._esc(this._formatMetersForInput(floor.offset_y || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br><label>Scale: <input id="align-scale" type="number" step="0.1" value="${floor.scale || 1}" style="width:80px"></label><br><label>Rotation (deg): <input id="align-rot" type="number" step="1" value="${(((floor.rotation || 0) * 180 / Math.PI)).toFixed(1)}" style="width:80px"></label><br><button id="align-save">Save Alignment</button></div>
-          <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Points (${floor.points.length})</h4><div style="max-height:150px; overflow:auto;">${floor.points.map((p) => `<div style="padding:4px; background:${p.id === this._selectedPointId ? "#e3f2fd" : "transparent"}; border-radius:4px;">(${this._esc(this._formatMetersForInput(p.x))}, ${this._esc(this._formatMetersForInput(p.y))}) <button data-del-point="${this._esc(p.id)}" style="float:right;">Delete</button></div>`).join("")}</div><p><button id="point-add">Add Point at 0,0</button></p></div>
-        </div>
-      </div>
-    `;
+    if (typeof this._renderHome3D === "function") this._renderHome3D();
   }
 
 
-    _renderGps() {
-    if (this._gpsLoading) return `<p class="loading">Loading GPS entitiesï¿½</p>`;
-    if (this._gpsError) return `<p class="error">Error: ${this._esc(this._gpsError)}</p><p><button id="gps-retry">Retry</button></p>`;
-    if (!this._gpsData || !this._gpsData.entities || this._gpsData.entities.length === 0) {
-      return `<p>No Device Tracker entities found. Ensure GPS trackers are configured.</p><p><button id="gps-retry">Refresh</button></p>`;
-    }
-    const entities = this._gpsData.entities;
-    let rows = entities.map(e => `
-      <tr>
-        <td><code>${this._esc(e.entity_id)}</code></td>
-        <td>${this._esc(e.name || e.friendly_name || "")}</td>
-        <td style="color:${e.state==="home"?"var(--success-color, green)":"var(--error-color, #db4437)"};font-weight:600">${this._esc(e.state)}</td>
-        <td>${this._esc(e.source_type || "")}</td>
-        <td>${e.latitude!=null ? this._esc(String(e.latitude)).slice(0,7)+", "+this._esc(String(e.longitude)).slice(0,7) : "N/A"}</td>
-        <td><ha-icon icon="${this._esc(e.icon)}"></ha-icon> <code>${this._esc(e.icon)}</code></td>
-      </tr>`).join("");
-    return `
-      <div style="overflow:auto">
-        <p><em>${entities.length} Device Tracker entities. Add to Targets alongside BLE.</em> <button id="gps-refresh">Refresh</button></p>
-        <table>
-          <thead><tr><th>Entity ID</th><th>Name</th><th>State</th><th>Source</th><th>Location</th><th>Icon</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    `;
-  }
 
-  _ensureTargetsSubscription() {
-    if (!this._hass || !this._hass.connection || this._targetsUnsub) return;
-    this._targetsLoading = true;
-    this._render();
-    try {
-      const sub = this._hass.connection.subscribeMessage(
-        (msg) => {
-          const data = msg.data || msg;
-          const payload = data.targets ? data : (data.data || data);
-          const targets = payload.targets || payload;
-          // Don't clobber form edits: if user is adding/editing, keep form but update list silently
-          const editing = this._showAddForm;
-          if (Array.isArray(targets) || Array.isArray(payload.targets)) {
-            this._targets = payload.targets || targets;
-            this._targetsLoading = false;
-            this._targetsError = null;
-            if (this._activeTab === "targets" && !editing) this._render();
-            else if (this._activeTab === "targets" && editing) { /* update list without full re-render to preserve inputs */ }
-          } else if (payload && payload.targets) {
-            this._targets = payload.targets;
-            this._targetsLoading = false;
-            if (this._activeTab === "targets" && !editing) this._render();
-          }
-        },
-        { type: "spatialHA/targets/subscribe" }
-      );
-      if (sub && typeof sub.then === "function") {
-        sub.then((unsub) => {
-          this._targetsUnsub = unsub;
-          // Also fetch once
-          this._fetchTargetsOnce();
-        }).catch(() => {
-          this._fetchTargetsOnce();
-        });
-      } else if (typeof sub === "function") {
-        this._targetsUnsub = sub;
-      } else {
-        this._fetchTargetsOnce();
-      }
-    } catch (e) {
-      this._fetchTargetsOnce();
-    }
-  }
 
-  async _fetchTargetsOnce() {
-    if (!this._hass) return;
-    try {
-      const res = await this._hass.callWS({ type: "spatialHA/targets/list" });
-      this._targets = res.targets || res || [];
-      this._targetsError = null;
-    } catch (err) {
-      this._targetsError = err.message || String(err);
-    } finally {
-      this._targetsLoading = false;
-      this._render();
-    }
-  }
 
-  async _createTarget() {
-    if (!this._hass) return;
-    const name = this._targetForm.name.trim();
-    if (!name) { alert("Name required"); return; }
-    try {
-      await this._hass.callWS({
-        type: "spatialHA/targets/create",
-        name: name,
-        target_type: this._targetForm.type,
-        icon: this._targetForm.icon,
-        ble_devices: this._targetForm.ble_devices,
-        gps_entities: this._targetForm.gps_entities || [],
-      });
-      this._showAddForm = false;
-      this._editingTarget = null;
-      this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [] };
-      // Targets will be pushed via subscription, but also fetch
-      this._fetchTargetsOnce();
-    } catch (e) {
-      alert("Failed to create target: " + (e.message || String(e)));
-    }
-  }
 
-  async _updateTarget() {
-    if (!this._hass || !this._editingTarget) return;
-    try {
-      await this._hass.callWS({
-        type: "spatialHA/targets/update",
-        target_id: this._editingTarget.id,
-        name: this._targetForm.name.trim() || this._editingTarget.name,
-        target_type: this._targetForm.type,
-        icon: this._targetForm.icon,
-        ble_devices: this._targetForm.ble_devices,
-        gps_entities: this._targetForm.gps_entities || [],
-      });
-      this._editingTarget = null;
-      this._showAddForm = false;
-      this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [] };
-      this._fetchTargetsOnce();
-    } catch (e) {
-      alert("Failed to update target: " + (e.message || String(e)));
-    }
-  }
 
-  async _deleteTarget(id) {
-    if (!confirm("Delete target?")) return;
-    try {
-      await this._hass.callWS({ type: "spatialHA/targets/delete", target_id: id });
-      this._fetchTargetsOnce();
-    } catch (e) {
-      alert("Failed to delete: " + (e.message || String(e)));
-    }
-  }
 
-  _startEdit(target) {
-    this._editingTarget = target;
-    this._showAddForm = true;
-    this._targetForm = {
-      name: target.name || "",
-      type: target.type || "Other",
-      icon: target.icon || (target.type === "Person" ? "mdi:account" : "mdi:help-circle"),
-      ble_devices: [...(target.ble_devices || [])],
-      gps_entities: [...(target.gps_entities || [])],
-    };
-    this._render();
-  }
 
-  _startAdd() {
-    this._editingTarget = null;
-    this._showAddForm = true;
-    this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [], gps_entities: [] };
-    this._render();
-  }
 
-  _cancelForm() {
-    this._showAddForm = false;
-    this._editingTarget = null;
-    this._targetForm = { name: "", type: "Person", icon: "mdi:account", ble_devices: [], gps_entities: [] };
-    this._render();
-  }
 
-  _toggleBleDevice(addr) {
-    const upper = String(addr).toUpperCase();
-    const idx = this._targetForm.ble_devices.findIndex(a => String(a).toUpperCase() === upper);
-    if (idx >= 0) this._targetForm.ble_devices.splice(idx, 1);
-    else this._targetForm.ble_devices.push(upper);
-    this._render();
-  }
 
-  _toggleGpsEntity(entity_id) {
-    const idx = this._targetForm.gps_entities.indexOf(entity_id);
-    if (idx >= 0) this._targetForm.gps_entities.splice(idx, 1);
-    else this._targetForm.gps_entities.push(entity_id);
-    this._render();
-  }
 
-  _renderBleScannerView() {
-    if (this._bleLoading) return `<p class="loading">Loading BLE devices via WebSocketâ€¦ (auto-refresh every Update Interval)</p>`;
-    if (this._bleError) return `<p class="error">Error: ${this._esc(this._bleError)}</p><p><button id="ble-retry">Retry</button></p>`;
-    if (!this._bleData || !this._bleData.sightings || this._bleData.sightings.length === 0) {
-      const hasScanners = this._bleData && this._bleData.scanners && this._bleData.scanners.length > 0;
-      if (!hasScanners) return `<p>No Bluetooth scanners found. Ensure Bluetooth proxies are configured. Data auto-updates every Update Interval.</p><p><button id="ble-retry">Refresh</button></p>`;
-      return `<p>No BLE devices found by scanners. Auto-refreshingâ€¦</p><p><button id="ble-retry">Refresh</button></p>`;
-    }
-    const sightings = this._bleData.sightings;
-    let rows = sightings.map(s => `
-      <tr>
-        <td>${this._esc(s.scanner_name || s.source)}</td>
-        <td><code>${this._esc(s.address)}</code></td>
-        <td>${this._esc(s.name || "")}</td>
-        <td>${s.rssi !== null && s.rssi !== undefined ? this._esc(String(s.rssi)) + " dBm" : "N/A"}</td>
-      </tr>
-    `).join("");
-    const updated = this._bleData.last_updated ? new Date(this._bleData.last_updated * 1000).toLocaleTimeString() : "";
-    return `
-      <div style="overflow:auto">
-        <p><em>Scanner view: every sighting (device Ã— scanner). ${sightings.length} rows. Auto-updates every ${this._esc(String(this._bleData.update_interval || this._settings?.update_interval || 1))}s ${updated ? " â€“ last: " + updated : ""}</em></p>
-        <table>
-          <thead><tr><th>Scanner</th><th>MAC / UUID</th><th>Name</th><th>RSSI</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    `;
-  }
 
-  _renderBleDeviceView() {
-    if (this._bleLoading) return `<p class="loading">Loading BLE devices via WebSocketâ€¦ (auto-refresh every Update Interval)</p>`;
-    if (this._bleError) return `<p class="error">Error: ${this._bleError}</p><p><button id="ble-retry">Retry</button></p>`;
-    if (!this._bleData || !this._bleData.devices || this._bleData.devices.length === 0) {
-      return `<p>No BLE devices found. Auto-refreshingâ€¦</p><p><button id="ble-retry">Refresh</button></p>`;
-    }
-    const scanners = this._bleData.scanners || [];
-    const devices = this._bleData.devices;
-    const updated = this._bleData.last_updated ? new Date(this._bleData.last_updated * 1000).toLocaleTimeString() : "";
-    if (scanners.length === 0) {
-      let rows = devices.map(d => `
-        <tr><td><code>${this._esc(d.address)}</code></td><td>${this._esc(d.name)}</td><td>${d.ibeacon ? this._esc(d.ibeacon.uuid) + " " + d.ibeacon.major + "/" + d.ibeacon.minor : "N/A"}</td><td>N/A</td></tr>
-      `).join("");
-      return `
-        <p><em>Device view: ${devices.length} devices (no scanner info). Auto-refreshingâ€¦</em></p>
-        <table><thead><tr><th>MAC / UUID</th><th>Name</th><th>iBeacon</th><th>RSSI</th></tr></thead><tbody>${rows}</tbody></table>
-      `;
-    }
-    let headerCols = `<th>MAC / UUID</th><th>Name</th>`;
-    // Add iBeacon column if any device has iBeacon
-    const hasIbeacon = devices.some(d => d.ibeacon);
-    if (hasIbeacon) headerCols += `<th>iBeacon UUID</th>`;
-    scanners.forEach(sc => {
-      const label = this._esc(sc.name || sc.source);
-      headerCols += `<th>${label}<br><small>${this._esc(sc.source)}</small></th>`;
-    });
-    let rows = devices.map(dev => {
-      let cols = `<td><code>${this._esc(dev.address)}</code></td><td>${this._esc(dev.name)}</td>`;
-      if (hasIbeacon) {
-        const ib = dev.ibeacon ? `${this._esc(dev.ibeacon.uuid)}<br><small>${dev.ibeacon.major}/${dev.ibeacon.minor}</small>` : "â€”";
-        cols += `<td>${ib}</td>`;
-      }
-      const per = dev.per_scanner || {};
-      scanners.forEach(sc => {
-        const key = sc.source;
-        let val = per[key];
-        if (val === undefined) {
-          val = per[key.toUpperCase()] || per[key.toLowerCase()];
-          if (val === undefined) {
-            for (const k of Object.keys(per)) {
-              if (k.toLowerCase() === key.toLowerCase()) { val = per[k]; break; }
-            }
-          }
-        }
-        if (val !== null && val !== undefined) {
-          cols += `<td>${this._esc(String(val))} dBm</td>`;
-        } else {
-          cols += `<td style="color: var(--secondary-text-color, #999)">N/A</td>`;
-        }
-      });
-      return `<tr>${cols}</tr>`;
-    }).join("");
 
-    return `
-      <div style="overflow:auto">
-        <p><em>Device view: ${devices.length} unique devices, ${scanners.length} scanners. Each column is a scanner (RSSI or N/A). Auto-updates every ${this._esc(String(this._bleData.update_interval || this._settings?.update_interval || 1))}s ${updated ? " â€“ last: " + updated : ""}</em></p>
-        <table>
-          <thead><tr>${headerCols}</tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    `;
-  }
 
-  _renderTargets() {
-    if (this._targetsLoading) return `<p class="loading">Loading targetsâ€¦</p>`;
-    if (this._targetsError) return `<p class="error">Error: ${this._esc(this._targetsError)}</p><p><button id="targets-retry">Retry</button></p>`;
-
-    let listHtml = "";
-    if (!this._targets || this._targets.length === 0) {
-      listHtml = `<p>No targets yet. Add a Person or Other target and assign BLE devices.</p>`;
-    } else {
-      listHtml = `<table><thead><tr><th>Name</th><th>Type</th><th>Icon</th><th>BLE Devices</th><th>GPS Entities</th><th>State</th><th>Actions</th></tr></thead><tbody>`;
-      this._targets.forEach(t => {
-        const bleList = (t.ble_devices || []).map(a => `<code>${this._esc(a)}</code>`).join(", ") || "<em>none</em>";
-        const gpsList = (t.gps_entities || []).map(a => `<code>${this._esc(a)}</code>`).join(", ") || "<em>none</em>";
-        const state = this._esc(t.state || "unknown");
-        const stateColor = state === "home" ? "var(--success-color, green)" : "var(--error-color, #db4437)";
-        listHtml += `<tr>
-          <td>${this._esc(t.name)} <small>(${this._esc(t.id.slice(0,8))})</small></td>
-          <td>${this._esc(t.type)} </td>
-          <td><ha-icon icon="${this._esc(t.icon)}"></ha-icon> <code>${this._esc(t.icon)}</code></td>
-          <td>${bleList}</td>
-          <td>${gpsList}</td>
-          <td style="color:${stateColor}; font-weight:600">${state}</td>
-          <td><button data-edit="${this._esc(t.id)}">Edit</button> <button data-delete="${this._esc(t.id)}">Delete</button></td>
-        </tr>`;
-      });
-      listHtml += `</tbody></table>`;
-    }
-
-    let formHtml = "";
-    if (this._showAddForm) {
-      const isEdit = !!this._editingTarget;
-      // Available BLE devices for assignment
-      let bleOptions = "";
-      const available = (this._bleData && (this._bleData.devices || [])) || [];
-      const allAddrs = new Set();
-      available.forEach(d => allAddrs.add(d.address));
-      (this._targetForm.ble_devices || []).forEach(a => allAddrs.add(a));
-      if (allAddrs.size === 0) {
-        bleOptions = `<p><em>No BLE devices discovered yet. Assign manually or wait for scanner.</em></p>`;
-      } else {
-        bleOptions = `<div style="max-height:180px; overflow:auto; border:1px solid var(--divider-color, #ccc); padding:8px; border-radius:6px;">`;
-        allAddrs.forEach(addr => {
-          const upper = String(addr).toUpperCase();
-          const checked = this._targetForm.ble_devices.some(a => String(a).toUpperCase() === upper) ? "checked" : "";
-          let name = upper;
-          const dev = available.find(d => String(d.address).toUpperCase() === upper);
-          if (dev && dev.name) name = `${dev.name} (${upper})`;
-          bleOptions += `<label style="display:block; margin:4px 0;"><input type="checkbox" data-ble-addr="${this._esc(upper)}" ${checked}> <code>${this._esc(upper)}</code> ${this._esc(name !== upper ? " - " + dev.name : "")}</label>`;
-        });
-        bleOptions += `</div>`;
-        bleOptions += `<p><small>Or add custom MAC/UUID:</small> <input id="ble-custom" placeholder="AA:BB:CC:DD:EE:FF" style="width:200px"> <button id="ble-add-custom">Add</button></p>`;
-      }
-      // GPS options
-      let gpsOptions = "";
-      const gpsAvailable = (this._gpsData && (this._gpsData.entities || [])) || [];
-      const allGps = new Set();
-      gpsAvailable.forEach(e => allGps.add(e.entity_id));
-      (this._targetForm.gps_entities || []).forEach(e => allGps.add(e));
-      if (allGps.size === 0) {
-        gpsOptions = `<p><em>No GPS Device Tracker entities found.</em></p>`;
-      } else {
-        gpsOptions = `<div style="max-height:180px; overflow:auto; border:1px solid var(--divider-color, #ccc); padding:8px; border-radius:6px;">`;
-        allGps.forEach(eid => {
-          const checked = this._targetForm.gps_entities.includes(eid) ? "checked" : "";
-          const ent = gpsAvailable.find(x => x.entity_id === eid);
-          const label = ent ? `${ent.name || ent.entity_id} (${ent.state})` : eid;
-          gpsOptions += `<label style="display:block; margin:4px 0;"><input type="checkbox" data-gps-entity="${this._esc(eid)}" ${checked}> <code>${this._esc(eid)}</code> ${this._esc(ent ? " - " + (ent.name || "") + " [" + ent.state + "]" : "")}</label>`;
-        });
-        gpsOptions += `</div>`;
-      }
-
-      formHtml = `
-        <div style="border:1px solid var(--divider-color, #ccc); padding:16px; border-radius:8px; margin:12px 0; background: var(--card-background-color, #fafafa);">
-          <h3>${isEdit ? "Edit" : "Add"} Target</h3>
-          <div class="field"><label>Name</label><input id="target-name" value="${this._esc(this._targetForm.name)}" placeholder="e.g. Alice" /></div>
-          <div class="field"><label>Type</label>
-            <select id="target-type">
-              <option value="Person" ${this._targetForm.type === "Person" ? "selected" : ""}>Person</option>
-              <option value="Other" ${this._targetForm.type === "Other" ? "selected" : ""}>Other</option>
-            </select>
-          </div>
-          <div class="field"><label>Icon (mdi:*)</label><input id="target-icon" value="${this._esc(this._targetForm.icon)}" placeholder="mdi:account" /></div>
-          <div class="field"><label>BLE Devices (one or many, state Home only if all seen; any Away => away)</label>${bleOptions}</div>
-          <div class="field"><label>GPS Entities (Device Tracker from HASS, also Home/Away)</label>${gpsOptions}</div>
-          <p><button id="target-save">${isEdit ? "Update" : "Create"}</button> <button id="target-cancel">Cancel</button></p>
-        </div>
-      `;
-    }
-
-    return `
-      <div class="card">
-        <h2>Targets</h2>
-        <p>Track anything with BLE devices. Person/Other are cosmetic (icon). Assign one or many BLE devices; state is <code>home</code> only if all assigned devices are seen, otherwise <code>not_home</code> (any Away => away). Each target creates a Device + Device Tracker entity.</p>
-        <p><button id="target-add">Add Target</button> <button id="targets-refresh">Refresh</button></p>
-        ${formHtml}
-        ${listHtml}
-      </div>
-    `;
-  }
-
-  _esc(s) {
-    if (s === null || s === undefined) return "";
-    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  }
 
   _render() {
     // Preserve focus/selection to fix deselection on auto-refresh
@@ -1762,18 +267,21 @@ class SpatialHAPanel extends HTMLElement {
       ha-icon { --mdc-icon-size: 18px; vertical-align: middle; }
     `;
 
+    const _hv = this._homeView || "iso";
+    const _hvb = (id, label) => `<button data-home-view="${id}" style="padding:6px 12px; margin:2px; border:1px solid #444; border-radius:4px; background:${_hv === id ? "#03a9f4" : "#1e2228"}; color:${_hv === id ? "white" : "#cfd6df"}; cursor:pointer;">${label}</button>`;
     const homeContent = `
       <div class="card">
         <h1>This is the spatialHA panel</h1>
-        <p>Welcome to spatialHA – Home tab</p>
-        <p>Isometric stacked view of each floor plan. Use the tabs above to navigate. All data is loaded via WebSocket through the backend.</p>
       </div>
       <div class="card" style="margin-top:12px;">
-        <h2>Floors – Isometric</h2>
-        <div style="border:1px solid #333; border-radius:8px; overflow:hidden; background:#14161a;">
-          <canvas id="home-iso-canvas" width="800" height="420" style="display:block; width:100%; height:420px; background:#14161a;"></canvas>
+        <h2>Floors</h2>
+        <div style="display:flex; gap:4px; margin:8px 0; flex-wrap:wrap;">
+          ${_hvb("iso", "Isometric")}${_hvb("top", "Top Down")}${_hvb("front", "Front")}${_hvb("back", "Back")}${_hvb("left", "Left Side")}${_hvb("right", "Right Side")}
         </div>
-        <p><small>Each floor stacked by level. Walls, rooms and points drawn in isometric projection.</small></p>
+        <div style="border:1px solid #333; border-radius:8px; overflow:hidden; background:#14161a;">
+          <canvas id="home-iso-canvas" width="800" height="420" style="display:block; width:100%; height:420px; background:#14161a; cursor:grab;"></canvas>
+        </div>
+        <p><small>Drag to rotate. Scroll to zoom.</small></p>
       </div>
     `;
 
@@ -1786,13 +294,13 @@ class SpatialHAPanel extends HTMLElement {
         </div>
       `;
       let bleInner = "";
-      if (this._activeBleSubTab === "scanner") bleInner = this._renderBleScannerView();
-      else bleInner = this._renderBleDeviceView();
+      if (this._activeBleSubTab === "scanner") bleInner = this._viewOrLoading("_renderBleScannerView");
+      else bleInner = this._viewOrLoading("_renderBleDeviceView");
 
       bleContent = `
         <div class="card">
           <h2>BLE</h2>
-          <p>Bluetooth devices found by Bluetooth proxies (via backend WebSocket straight to Home Assistant). Auto-updates every Update Interval.</p>
+          <p>Bluetooth devices found by Bluetooth proxies.</p>
           ${subNav}
           <div>${bleInner}</div>
         </div>
@@ -1809,7 +317,7 @@ class SpatialHAPanel extends HTMLElement {
           <input id="interval-input" type="number" min="0.5" max="3600" step="0.5" value="${this._esc(this._pendingInterval)}" />
           <button id="settings-save" ${this._settingsSaving ? "disabled" : ""}>${this._settingsSaving ? "Savingâ€¦" : "Save"}</button>
         </div>
-        <p><small>Backend polls BLE data every Update Interval even without frontend and pushes to BLE tab. Stored in <code>.storage/spatialHA/settings</code> and <code>.storage/spatialHA/ble_data</code>.</small></p>
+        <p><small>Applies to background updates.</small></p>
       `;
     } else {
       settingsInner = `<p class="loading">No settings loaded.</p><p><button id="settings-retry">Retry</button></p>`;
@@ -1823,7 +331,7 @@ class SpatialHAPanel extends HTMLElement {
 
     let targetsContent = "";
     if (this._activeTab === "targets") {
-      targetsContent = this._renderTargets();
+      targetsContent = this._viewOrLoading("_renderTargets");
     }
 
     let aboutInner = "";
@@ -1832,9 +340,9 @@ class SpatialHAPanel extends HTMLElement {
     } else if (this._versionError) {
       aboutInner = `<p class="error">Error loading version: ${this._versionError}</p><p><button id="retry-btn">Retry</button></p>`;
     } else if (this._version !== null) {
-      aboutInner = `<p class="version">Current version: ${this._version}</p><p>Version fetched via <code>spatialHA/get_version</code> WebSocket (frontend â†’ backend â†’ Home Assistant).</p>`;
+      aboutInner = `<p class="version">Version ${this._version}</p>`;
     } else {
-      aboutInner = `<p class="loading">No version loaded yet. Waiting for Home Assistant connection...</p>`;
+      aboutInner = `<p class="loading">Loading…</p>`;
     }
     const aboutContent = `
       <div class="card">
@@ -1846,8 +354,8 @@ class SpatialHAPanel extends HTMLElement {
     let mainInner = "";
     if (this._activeTab === "home") mainInner = homeContent;
     else if (this._activeTab === "ble") mainInner = bleContent;
-    else if (this._activeTab === "floorplan") mainInner = this._renderFloorplan();
-    else if (this._activeTab === "gps") mainInner = this._renderGps();
+    else if (this._activeTab === "floorplan") mainInner = this._viewOrLoading("_renderFloorplan");
+    else if (this._activeTab === "gps") mainInner = this._viewOrLoading("_renderGps");
     else if (this._activeTab === "targets") mainInner = targetsContent;
     else if (this._activeTab === "settings") mainInner = settingsContent;
     else if (this._activeTab === "about") mainInner = aboutContent;
@@ -2007,7 +515,34 @@ class SpatialHAPanel extends HTMLElement {
     this.shadowRoot.querySelectorAll("[data-floor]").forEach((b) => b.addEventListener("click", () => { this._selectedFloorId = b.getAttribute("data-floor"); this._selectedPointId = null; this._selectedWallId = null; this._contextMenu = null; this._saveFloorplan(); this._render(); this._renderFloorplanCanvas(); }));
     if (this.shadowRoot.getElementById("home-iso-canvas")) {
       setTimeout(() => this._renderHomeIsoCanvas(), 0);
+      const hc = this.shadowRoot.getElementById("home-iso-canvas");
+      hc.onmousedown = (e) => {
+        if (e.button !== 0) return;
+        this._homeRotating = true;
+        this._homeRotStart = { x: e.clientX, y: e.clientY, yaw: this._homeYawOff || 0, pitch: this._homePitchOff || 0 };
+        hc.style.cursor = "grabbing";
+        e.preventDefault();
+      };
+      hc.onmousemove = (e) => {
+        if (!this._homeRotating || !this._homeRotStart) return;
+        this._homeYawOff = this._homeRotStart.yaw + (e.clientX - this._homeRotStart.x) * 0.4;
+        this._homePitchOff = Math.max(-60, Math.min(60, this._homeRotStart.pitch + (e.clientY - this._homeRotStart.y) * 0.3));
+        if (typeof this._requestDraw === "function") this._requestDraw("home3d", () => this._renderHomeIsoCanvas());
+        else this._renderHomeIsoCanvas();
+      };
+      hc.onmouseup = () => { this._homeRotating = false; hc.style.cursor = "grab"; };
+      hc.onmouseleave = () => { this._homeRotating = false; hc.style.cursor = "grab"; };
+      hc.onwheel = (e) => {
+        e.preventDefault();
+        this._homeZoom = Math.max(0.4, Math.min(3, (this._homeZoom || 1) * (e.deltaY > 0 ? 0.92 : 1.08)));
+        if (typeof this._requestDraw === "function") this._requestDraw("home3d", () => this._renderHomeIsoCanvas());
+        else this._renderHomeIsoCanvas();
+      };
     }
+    this.shadowRoot.querySelectorAll("[data-home-view]").forEach((b) => b.addEventListener("click", () => {
+      if (typeof this._homeSetView === "function") this._homeSetView(b.getAttribute("data-home-view"));
+      else { this._homeView = b.getAttribute("data-home-view"); this._render(); }
+    }));
     const floorAdd = this.shadowRoot.getElementById("floor-add");
     if (floorAdd) floorAdd.addEventListener("click", () => {
       const name = prompt("Floor name?", "Floor " + (this._floorplan.floors.length + 1));

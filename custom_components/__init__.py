@@ -28,7 +28,22 @@ try:
     import custom_components.spatialHA as _spatialHA  # noqa: F401
 
     sys.modules.setdefault("custom_components.spatialha", _spatialHA)
-    for _sub in ("config_flow", "const", "websocket"):
+    for _sub in (
+        "ble",
+        "config_flow",
+        "const",
+        "device_tracker",
+        "floorplan",
+        "gps",
+        "storage",
+        "targets",
+        "websocket",
+        "ws_ble",
+        "ws_floorplan",
+        "ws_gps",
+        "ws_settings",
+        "ws_targets",
+    ):
         try:
             _mod = importlib.import_module(f"custom_components.spatialHA.{_sub}")
             sys.modules.setdefault(f"custom_components.spatialha.{_sub}", _mod)

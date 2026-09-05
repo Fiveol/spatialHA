@@ -1,0 +1,182 @@
+export const Home3DMixin = {
+  _homeViews() {
+    return [
+      { id: "iso", label: "Isometric", yaw: 45, pitch: 35.264 },
+      { id: "top", label: "Top Down", yaw: 0, pitch: 89.9 },
+      { id: "front", label: "Front", yaw: 0, pitch: 8 },
+      { id: "back", label: "Back", yaw: 180, pitch: 8 },
+      { id: "left", label: "Left Side", yaw: -90, pitch: 8 },
+      { id: "right", label: "Right Side", yaw: 90, pitch: 8 },
+    ];
+  },
+  _homeCam() {
+    const views = this._homeViews();
+    const base = views.find((v) => v.id === (this._homeView || "iso")) || views[0];
+    return {
+      yaw: (base.yaw + (this._homeYawOff || 0)) * Math.PI / 180,
+      pitch: Math.max(-80, Math.min(89.9, base.pitch + (this._homePitchOff || 0))) * Math.PI / 180,
+    };
+  },
+  _homeSetView(id) {
+    this._homeView = id;
+    this._homeYawOff = 0;
+    this._homePitchOff = 0;
+    this._render();
+  },
+  _homeProject(x, y, z, cx, cy, s, cosY, sinY, cosP, sinP) {
+    // Orbit camera: yaw around Z, pitch around X, orthographic.
+    const x1 = x * cosY - y * sinY;
+    const y1 = x * sinY + y * cosY;
+    const z1 = z;
+    const y2 = y1 * cosP - z1 * sinP;
+    const z2 = y1 * sinP + z1 * cosP;
+    return { x: cx + x1 * s, y: cy - z2 * s, depth: y2 };
+  },
+  _renderHome3D() {
+    const canvas = this.shadowRoot ? this.shadowRoot.getElementById("home-iso-canvas") : null;
+    if (!canvas) return;
+    if (!this._floorplan || !this._floorplan.floors || !this._floorplan.floors.length) {
+      if (this._hass && !this._floorplan && !this._floorplanLoading) this._fetchFloorplanOnce();
+      return;
+    }
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const rect = canvas.getBoundingClientRect();
+    const cssW = Math.max(300, Math.round(rect.width || 800));
+    const cssH = 420;
+    if (canvas.width !== Math.floor(cssW * dpr) || canvas.height !== Math.floor(cssH * dpr)) {
+      canvas.width = Math.floor(cssW * dpr);
+      canvas.height = Math.floor(cssH * dpr);
+      canvas.style.height = cssH + "px";
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.fillStyle = "#14161a";
+    ctx.fillRect(0, 0, cssW, cssH);
+    const floors = [...this._floorplan.floors].sort((a, b) => (a.level || 0) - (b.level || 0));
+    const cam = this._homeCam();
+    const cosY = Math.cos(cam.yaw), sinY = Math.sin(cam.yaw);
+    const cosP = Math.cos(cam.pitch), sinP = Math.sin(cam.pitch);
+    const GAP = 1.5;
+    // Stack base heights from floor heights
+    let zb = 0;
+    const bases = floors.map((f) => {
+      const z = zb;
+      zb += (parseFloat(f.height) || 3) + GAP;
+      return z;
+    });
+    const totalH = zb;
+    // Scene extents for fit
+    let maxDim = 10, maxZ = totalH || 6;
+    for (const f of floors) maxDim = Math.max(maxDim, parseFloat(f.width) || 10, parseFloat(f.depth) || 8);
+    const zoom = this._homeZoom || 1;
+    const s = Math.min(cssW / (maxDim * 2.1), cssH / (maxDim * 1.1 + maxZ * 0.9)) * zoom;
+    // Center scene: project centroid with cx=cy=0 then offset
+    const cc = { x: 0, y: 0, z: 0 };
+    let n = 0;
+    for (const f of floors) {
+      cc.x += (parseFloat(f.width) || 10) / 2; cc.y += (parseFloat(f.depth) || 8) / 2; n++;
+    }
+    cc.x /= n || 1; cc.y /= n || 1; cc.z = maxZ / 2;
+    const x1 = cc.x * cosY - cc.y * sinY;
+    const y1 = cc.x * sinY + cc.y * cosY;
+    const z2 = y1 * sinP + cc.z * cosP;
+    const cx = cssW / 2 - x1 * s, cy = cssH / 2 + z2 * s;
+    const proj = (x, y, z) => {
+      const ax = x * cosY - y * sinY;
+      const ay = x * sinY + y * cosY;
+      const bz = ay * sinP + z * cosP;
+      const depth = ay * cosP - z * sinP;
+      return { x: cx + ax * s, y: cy - bz * s, depth };
+    };
+    const faces = [];
+    const lines = [];
+    const dots = [];
+    floors.forEach((floor, fi) => {
+      const z0 = bases[fi];
+      const h = parseFloat(floor.height) || 3;
+      const w = parseFloat(floor.width) || 10, d = parseFloat(floor.depth) || 8;
+      const corners = [[0, 0], [w, 0], [w, d], [0, d]];
+      // Slab top + sides
+      faces.push({ pts: corners.map(([x, y]) => [x, y, z0 + 0.25]), fill: "rgba(255,255,255,0.05)", stroke: "#4a5568", width: 1.5 });
+      const sidePairs = [[[0, 0], [w, 0]], [[w, 0], [w, d]], [[w, d], [0, d]], [[0, d], [0, 0]]];
+      for (const [[ax, ay], [bx, by]] of sidePairs) {
+        faces.push({ pts: [[ax, ay, z0], [bx, by, z0], [bx, by, z0 + 0.25], [ax, ay, z0 + 0.25]], fill: "rgba(255,255,255,0.02)", stroke: "#333c48", width: 1 });
+      }
+      // Rooms (floor polygons slightly above slab)
+      for (const room of (floor.rooms || [])) {
+        if (!room.point_ids || room.point_ids.length < 3) continue;
+        const pts = room.point_ids.map((id) => floor.points.find((p) => p.id === id)).filter(Boolean);
+        if (pts.length < 3) continue;
+        faces.push({ pts: pts.map((p) => [p.x, p.y, z0 + 0.27]), fill: (room.color || "#6496ff") + "44", stroke: room.color || "#7aa2ff", width: 1.5 });
+      }
+      // Walls as vertical quads
+      for (const wall of (floor.walls || [])) {
+        const p1 = floor.points.find((p) => p.id === wall.p1), p2 = floor.points.find((p) => p.id === wall.p2);
+        if (!p1 || !p2) continue;
+        faces.push({ pts: [[p1.x, p1.y, z0 + 0.25], [p2.x, p2.y, z0 + 0.25], [p2.x, p2.y, z0 + h], [p1.x, p1.y, z0 + h]], fill: "rgba(232,234,240,0.10)", stroke: "#e8eaf0", width: 1.5 });
+      }
+      // Doors/windows as wall-height markers
+      for (const door of (floor.doors || [])) {
+        const rad = (parseFloat(door.rotation) || 0) * Math.PI / 180;
+        const dw = parseFloat(door.width) || 0.9;
+        const dx = Math.cos(rad), dy = Math.sin(rad);
+        const x = parseFloat(door.x) || 0, y = parseFloat(door.y) || 0;
+        lines.push({ a: [x - dx * dw / 2, y - dy * dw / 2, z0 + 1.0], b: [x + dx * dw / 2, y + dy * dw / 2, z0 + 1.0], stroke: "#fbbf24", width: 2.5 });
+      }
+      for (const win of (floor.windows || [])) {
+        const rad = (parseFloat(win.rotation) || 0) * Math.PI / 180;
+        const ww = parseFloat(win.width) || 1.2;
+        const dx = Math.cos(rad), dy = Math.sin(rad);
+        const x = parseFloat(win.x) || 0, y = parseFloat(win.y) || 0;
+        const sill = z0 + (parseFloat(win.height_from_floor) || 0.9);
+        lines.push({ a: [x, y, sill], b: [x + dx * ww, y + dy * ww, sill], stroke: "#22d3ee", width: 2 });
+      }
+      // Points as short posts
+      for (const pt of (floor.points || [])) {
+        lines.push({ a: [pt.x, pt.y, z0 + 0.25], b: [pt.x, pt.y, z0 + 0.7], stroke: "#03a9f4", width: 3 });
+        dots.push({ p: [pt.x, pt.y, z0 + 0.7] });
+      }
+      faces.push({ label: (floor.name || "") + " (L" + (floor.level || 0) + ")", at: [0, 0, z0], isLabel: true });
+    });
+    // Painter sort: far first
+    const depthOf = (pts) => pts.reduce((a, p) => a + proj(p[0], p[1], p[2]).depth, 0) / pts.length;
+    faces.sort((a, b) => {
+      if (a.isLabel) return 1;
+      if (b.isLabel) return -1;
+      return depthOf(b.pts) - depthOf(a.pts);
+    });
+    for (const f of faces) {
+      if (f.isLabel) {
+        const q = proj(f.at[0], f.at[1], f.at[2]);
+        ctx.font = "12px sans-serif";
+        ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.85)";
+        ctx.strokeText(f.label, q.x - 30, q.y - 10);
+        ctx.fillStyle = "#f1f3f5"; ctx.fillText(f.label, q.x - 30, q.y - 10);
+        continue;
+      }
+      ctx.fillStyle = f.fill;
+      ctx.strokeStyle = f.stroke; ctx.lineWidth = f.width;
+      ctx.beginPath();
+      f.pts.forEach(([x, y, z], i) => {
+        const q = proj(x, y, z);
+        if (i === 0) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y);
+      });
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    const allLines = lines.map((l) => ({ ...l, depth: (proj(...l.a).depth + proj(...l.b).depth) / 2 }));
+    allLines.sort((a, b) => b.depth - a.depth);
+    for (const l of allLines) {
+      const q1 = proj(...l.a), q2 = proj(...l.b);
+      ctx.strokeStyle = l.stroke; ctx.lineWidth = l.width;
+      ctx.beginPath(); ctx.moveTo(q1.x, q1.y); ctx.lineTo(q2.x, q2.y); ctx.stroke();
+    }
+    const allDots = dots.map((d) => ({ ...d, depth: proj(...d.p).depth }));
+    allDots.sort((a, b) => b.depth - a.depth);
+    for (const d of allDots) {
+      const q = proj(...d.p);
+      ctx.fillStyle = "#03a9f4";
+      ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, Math.PI * 2); ctx.fill();
+    }
+  },
+};

@@ -10,32 +10,80 @@ from importlib.metadata import PackageNotFoundError, version
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
-from homeassistant.helpers.storage import Store
 
+from .ble import _get_ble_data
 from .const import DOMAIN, LOGGER
+from .floorplan import (
+    DEFAULT_DOOR_DEFAULTS,
+    DEFAULT_WINDOW,
+    DOOR_TYPES,
+    STORAGE_KEY_FLOORPLAN,
+    _async_load_floorplan,
+    _async_save_floorplan,
+    _clamp_point_to_floor,
+    _default_floorplan,
+    _get_floorplan_store,
+)
+from .storage import (
+    DEFAULT_UPDATE_INTERVAL,
+    STORAGE_KEY_BLE_DATA,
+    STORAGE_KEY_BLE_SIGHTINGS,
+    STORAGE_KEY_SETTINGS,
+    STORAGE_KEY_TARGETS,
+    STORAGE_VERSION,
+    _async_load_settings,
+    _async_load_targets,
+    _async_save_settings,
+    _async_save_targets,
+    _get_ble_data_store,
+    _get_ble_sightings_store,
+    _get_settings_store,
+    _get_targets_store,
+)
+from .targets import _async_update_target_trackers, _compute_target_state
+
+__all__ = [
+    "DEFAULT_DOOR_DEFAULTS",
+    "DEFAULT_UPDATE_INTERVAL",
+    "DEFAULT_WINDOW",
+    "DOMAIN",
+    "DOOR_TYPES",
+    "PANEL_ICON",
+    "PANEL_NAME",
+    "PANEL_TITLE",
+    "PANEL_URL",
+    "PANEL_URL_PATH",
+    "STORAGE_KEY_BLE_DATA",
+    "STORAGE_KEY_BLE_SIGHTINGS",
+    "STORAGE_KEY_FLOORPLAN",
+    "STORAGE_KEY_SETTINGS",
+    "STORAGE_KEY_TARGETS",
+    "STORAGE_VERSION",
+    "_async_load_floorplan",
+    "_async_load_settings",
+    "_async_load_targets",
+    "_async_save_floorplan",
+    "_async_save_settings",
+    "_async_save_targets",
+    "_async_start_ble_polling",
+    "_async_update_ble_data_and_push",
+    "_async_update_target_trackers",
+    "_clamp_point_to_floor",
+    "_compute_target_state",
+    "_default_floorplan",
+    "_get_ble_data",
+    "_get_version",
+    "async_setup",
+    "async_setup_entry",
+    "async_unload_entry",
+]
+
 
 PANEL_URL = "/api/panels/spatialHA/spatialHA-panel.js"
 PANEL_NAME = "spatialHA-panel"
 PANEL_TITLE = "spatialHA"
 PANEL_ICON = "mdi:account"
 PANEL_URL_PATH = "spatialHA"
-
-STORAGE_KEY_SETTINGS = "spatialHA/settings"
-STORAGE_KEY_BLE_DATA = "spatialHA/ble_data"
-STORAGE_KEY_BLE_SIGHTINGS = "spatialHA/sightings"
-STORAGE_KEY_TARGETS = "spatialHA/targets"
-STORAGE_KEY_FLOORPLAN = "spatialHA/floorplan"
-STORAGE_VERSION = 1
-DEFAULT_UPDATE_INTERVAL = 1.0
-
-# Legacy keys for migration (old files with dot prefix)
-LEGACY_STORAGE_KEYS = {
-    "spatialHA/settings": "spatialHA.settings",
-    "spatialHA/ble_data": "spatialHA.ble_data",
-    "spatialHA/sightings": "spatialHA.sightings",
-    "spatialHA/targets": "spatialHA.targets",
-    "spatialHA/floorplan": "spatialHA.floorplan",
-}
 
 
 def _get_version_sync() -> str:
@@ -75,450 +123,12 @@ async def _get_version(hass: HomeAssistant) -> str:
     return version_str
 
 
-def _resolve_js_path_sync() -> pathlib.Path:
-    """Blocking path resolution - run in executor."""
-    base = pathlib.Path(__file__).parent / "frontend"
-    p1 = base / "spatialHA-panel.js"
-    if p1.exists():
-        return p1
-    p2 = base / "spatialHA-panel.js"
-    if p2.exists():
-        return p2
-    candidates = list(base.glob("*.js"))
-    if candidates:
-        return candidates[0]
-    return p1
-
-
 # --- Storage helpers for Settings and BLE data ( .storage/spatialHA/* ) ---
-def _get_settings_store(hass: HomeAssistant) -> Store:
-    """Get Store for spatialHA/settings (new folder) - .storage/spatialHA/settings."""
-    return Store(hass, STORAGE_VERSION, STORAGE_KEY_SETTINGS)
-
-
-def _get_ble_data_store(hass: HomeAssistant) -> Store:
-    """Get Store for spatialHA/ble_data."""
-    return Store(hass, STORAGE_VERSION, STORAGE_KEY_BLE_DATA)
-
-
-def _get_ble_sightings_store(hass: HomeAssistant) -> Store:
-    """Get Store for spatialHA/sightings (extra file for future)."""
-    return Store(hass, STORAGE_VERSION, STORAGE_KEY_BLE_SIGHTINGS)
-
-
-def _get_targets_store(hass: HomeAssistant) -> Store:
-    """Get Store for spatialHA/targets."""
-    return Store(hass, STORAGE_VERSION, STORAGE_KEY_TARGETS)
-
-
-async def _async_migrate_legacy_storage(hass: HomeAssistant, new_key: str) -> None:
-    """Migrate legacy dot-prefixed file to folder structure and remove old file."""
-    legacy_key = LEGACY_STORAGE_KEYS.get(new_key)
-    if not legacy_key:
-        return
-    # Check if new file already exists
-    new_store = Store(hass, STORAGE_VERSION, new_key)
-    new_data = await new_store.async_load()
-    if new_data is not None:
-        # New file exists, just remove legacy if it exists
-        try:
-            legacy_path = hass.config.path(".storage", legacy_key)
-            def _remove():
-                import os
-                try:
-                    if os.path.exists(legacy_path):
-                        os.remove(legacy_path)
-                        LOGGER.info("Removed legacy storage file %s", legacy_key)
-                except Exception as err:  # noqa: BLE001
-                    LOGGER.debug("Failed to remove legacy %s: %s", legacy_key, err)
-            await hass.async_add_executor_job(_remove)
-        except Exception:  # noqa: BLE001
-            pass
-        return
-    # New file doesn't exist, try legacy
-    legacy_store = Store(hass, STORAGE_VERSION, legacy_key)
-    legacy_data = await legacy_store.async_load()
-    if legacy_data is not None:
-        # Migrate to new
-        await new_store.async_save(legacy_data)
-        LOGGER.info("Migrated %s -> %s", legacy_key, new_key)
-        # Remove old file
-        try:
-            legacy_path = hass.config.path(".storage", legacy_key)
-            def _remove2():
-                import os
-                try:
-                    if os.path.exists(legacy_path):
-                        os.remove(legacy_path)
-                except Exception:  # noqa: BLE001
-                    pass
-            await hass.async_add_executor_job(_remove2)
-        except Exception:  # noqa: BLE001
-            pass
-
-
-async def _async_load_with_migration(hass: HomeAssistant, new_key: str) -> dict | None:
-    """Load from new folder storage, fallback to legacy dot file and migrate."""
-    await _async_migrate_legacy_storage(hass, new_key)
-    store = Store(hass, STORAGE_VERSION, new_key)
-    return await store.async_load()
-
-
-async def _async_load_settings(hass: HomeAssistant) -> dict:
-    """Load settings from .storage/spatialHA/settings (migrates from spatialHA.settings)."""
-    data = await _async_load_with_migration(hass, STORAGE_KEY_SETTINGS)
-    if not isinstance(data, dict):
-        data = {}
-    # Apply defaults
-    if "update_interval" not in data:
-        data["update_interval"] = DEFAULT_UPDATE_INTERVAL
-    # Validate
-    try:
-        iv = float(data["update_interval"])
-        if iv <= 0 or iv > 3600:
-            iv = DEFAULT_UPDATE_INTERVAL
-        data["update_interval"] = iv
-    except Exception:  # noqa: BLE001
-        data["update_interval"] = DEFAULT_UPDATE_INTERVAL
-    return data
-
-
-async def _async_save_settings(hass: HomeAssistant, settings: dict) -> None:
-    """Save settings to .storage/spatialHA/settings."""
-    store = _get_settings_store(hass)
-    await store.async_save(settings)
-    hass.data.setdefault(DOMAIN, {})["settings"] = settings
-
-
-async def _async_load_targets(hass: HomeAssistant) -> list[dict]:
-    """Load targets from .storage/spatialHA/targets (migrates from spatialHA.targets)."""
-    data = await _async_load_with_migration(hass, STORAGE_KEY_TARGETS)
-    if isinstance(data, dict) and "targets" in data:
-        # Old format: {"targets": [...]}
-        targets = data["targets"]
-    elif isinstance(data, list):
-        targets = data
-    else:
-        targets = []
-    if not isinstance(targets, list):
-        targets = []
-    return targets
-
-
-async def _async_save_targets(hass: HomeAssistant, targets: list[dict]) -> None:
-    """Save targets to .storage/spatialHA/targets."""
-    store = _get_targets_store(hass)
-    await store.async_save({"targets": targets})
-    hass.data.setdefault(DOMAIN, {})["targets"] = targets
-    # Also update device_tracker entities
-    try:
-        await _async_update_target_trackers(hass)
-    except Exception as err:  # noqa: BLE001
-        LOGGER.debug("Failed to update target trackers after save: %s", err)
-
-
-def _get_floorplan_store(hass: HomeAssistant) -> Store:
-    """Get Store for spatialHA/floorplan."""
-    return Store(hass, STORAGE_VERSION, STORAGE_KEY_FLOORPLAN)
-
-
-DOOR_TYPES = ("Door", "Double Door", "Garage Door")
-DEFAULT_DOOR_DEFAULTS = {"Door": 0.9, "Double Door": 1.6, "Garage Door": 2.4}
-DEFAULT_WINDOW = {"width": 1.2, "height": 1.2, "height_from_floor": 0.9}
-
-
-def _default_floorplan() -> dict:
-    """Return default floorplan with one floor and one point at 0,0 (meters internally)."""
-    return {
-        "units": "meters",  # display units, internal is meters
-        "active_floor_id": "floor_1",
-        "door_defaults": dict(DEFAULT_DOOR_DEFAULTS),
-        "window_defaults": dict(DEFAULT_WINDOW),
-        "floors": [
-            {
-                "id": "floor_1",
-                "name": "Floor 1",
-                "level": 0,
-                "offset_x": 0.0,
-                "offset_y": 0.0,
-                "scale": 1.0,
-                "rotation": 0.0,
-                "width": 10.0,
-                "depth": 8.0,
-                "height": 3.0,
-                "points": [{"id": "point_1", "x": 0.0, "y": 0.0, "label": ""}],
-                "walls": [],
-                "rooms": [],
-                "doors": [],
-                "windows": [],
-                "windows": [],
-            }
-        ],
-    }
-
-
-def _clamp_point_to_floor(floor: dict, x: float, y: float) -> tuple[float, float]:
-    """Constrain point to floor dimensions (meters, origin 0,0 corner)."""
-    try:
-        w = float(floor.get("width", 10.0) or 10.0)
-        d = float(floor.get("depth", 8.0) or 8.0)
-    except Exception:
-        w, d = 10.0, 8.0
-    if w <= 0:
-        w = 10.0
-    if d <= 0:
-        d = 8.0
-    cx = min(max(float(x), 0.0), w)
-    cy = min(max(float(y), 0.0), d)
-    return cx, cy
-
-
-async def _async_load_floorplan(hass: HomeAssistant) -> dict:
-    """Load floorplan from .storage/spatialHA/floorplan (migrates)."""
-    data = await _async_load_with_migration(hass, STORAGE_KEY_FLOORPLAN)
-    if not isinstance(data, dict) or "floors" not in data:
-        # Check if old flat structure
-        if isinstance(data, dict) and "points" in data:
-            return _default_floorplan()
-        return _default_floorplan()
-    # Ensure defaults
-    if "units" not in data:
-        data["units"] = "meters"
-    if "active_floor_id" not in data or not any(f["id"] == data["active_floor_id"] for f in data.get("floors", [])):
-        data["active_floor_id"] = data["floors"][0]["id"] if data.get("floors") else "floor_1"
-    data.setdefault("door_defaults", dict(DEFAULT_DOOR_DEFAULTS))
-    for k, v in DEFAULT_DOOR_DEFAULTS.items():
-        data["door_defaults"].setdefault(k, v)
-    data.setdefault("window_defaults", dict(DEFAULT_WINDOW))
-    for k, v in DEFAULT_WINDOW.items():
-        data["window_defaults"].setdefault(k, v)
-    # Ensure each floor has required fields
-    for floor in data.get("floors", []):
-        floor.setdefault("offset_x", 0.0)
-        floor.setdefault("offset_y", 0.0)
-        floor.setdefault("scale", 1.0)
-        floor.setdefault("rotation", 0.0)
-        floor.setdefault("width", 10.0)
-        floor.setdefault("depth", 8.0)
-        floor.setdefault("height", 3.0)
-        floor.setdefault("points", [])
-        floor.setdefault("walls", [])
-        floor.setdefault("rooms", [])
-        floor.setdefault("doors", [])
-        floor.setdefault("windows", [])
-        # Normalize doors
-        for door in floor["doors"]:
-            door.setdefault("type", "Door")
-            if door["type"] not in DOOR_TYPES:
-                door["type"] = "Door"
-            door.setdefault("rotation", 0.0)
-            door.setdefault("swing", "right" if door["type"] == "Door" else ("left" if door["type"] == "Double Door" else "up"))
-            if "width" not in door or not isinstance(door["width"], (int, float)) or door["width"] <= 0:
-                door["width"] = data["door_defaults"].get(door["type"], 0.9)
-        # Normalize windows (origin = lower left corner, meters internally)
-        for win in floor["windows"]:
-            win.setdefault("rotation", 0.0)
-            for kk in ("width", "height", "height_from_floor"):
-                try:
-                    vv = float(win.get(kk, 0) or 0)
-                except Exception:
-                    vv = 0
-                if vv <= 0:
-                    vv = data["window_defaults"].get(kk, DEFAULT_WINDOW[kk])
-                win[kk] = vv
-            try:
-                win["x"] = float(win.get("x", 0) or 0)
-                win["y"] = float(win.get("y", 0) or 0)
-            except Exception:
-                win["x"] = 0.0
-                win["y"] = 0.0
-        if not floor["points"]:
-            floor["points"] = [{"id": "point_1", "x": 0.0, "y": 0.0, "label": ""}]
-        # Clamp existing points into dimensions
-        for pt in floor["points"]:
-            try:
-                cx, cy = _clamp_point_to_floor(floor, float(pt.get("x", 0.0)), float(pt.get("y", 0.0)))
-                pt["x"] = cx
-                pt["y"] = cy
-            except Exception:
-                pass
-    return data
-
-
-async def _async_save_floorplan(hass: HomeAssistant, floorplan: dict) -> None:
-    """Save floorplan to .storage/spatialHA/floorplan."""
-    store = _get_floorplan_store(hass)
-    await store.async_save(floorplan)
-    hass.data.setdefault(DOMAIN, {})["floorplan"] = floorplan
-    # Push to subscribers
-    subs = hass.data.get(DOMAIN, {}).get("floorplan_subscribers", set())
-    if subs:
-        try:
-            from homeassistant.components import websocket_api as ws_api
-
-            for conn, msg_id in list(subs):
-                try:
-                    conn.send_message(ws_api.event_message(msg_id, {"type": "floorplan_update", "floorplan": floorplan}))
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-
-def _compute_target_state(target: dict, ble_data: dict | None, hass: HomeAssistant | None = None) -> str:
-    """Compute target state from assigned BLE + GPS devices. If any Away -> away else home.
-
-    BLE: if any assigned MAC not seen by any scanner (RSSI None) => away
-    GPS: if any assigned device_tracker entity state != home => away
-    If target has no devices at all => not_home
-    """
-    ble_devices = target.get("ble_devices") or target.get("devices") or []
-    gps_entities = target.get("gps_entities") or target.get("gps_devices") or target.get("device_trackers") or []
-    # Normalize
-    if isinstance(gps_entities, str):
-        gps_entities = [gps_entities]
-    if isinstance(ble_devices, str):
-        ble_devices = [ble_devices]
-    if not ble_devices and not gps_entities:
-        return "not_home"
-
-    # Check BLE part
-    if ble_devices:
-        if not ble_data:
-            return "not_home"
-        # Build set of seen addresses (upper) - optimized
-        seen: set[str] = set()
-        for dev in ble_data.get("devices", []):
-            per = dev.get("per_scanner") or {}
-            # Fast check: any RSSI not None
-            for rssi in per.values():
-                if rssi is not None:
-                    seen.add(str(dev.get("address", "")).upper())
-                    break
-            else:
-                if dev.get("address") and not per:
-                    seen.add(str(dev["address"]).upper())
-        for sight in ble_data.get("sightings", []):
-            if sight.get("rssi") is not None:
-                seen.add(str(sight.get("address", "")).upper())
-
-        for addr in ble_devices:
-            addr_upper = str(addr).upper()
-            if addr_upper not in seen:
-                return "not_home"
-            # Verify per_scanner has at least one seen
-            found = False
-            for dev in ble_data.get("devices", []):
-                if str(dev.get("address", "")).upper() == addr_upper:
-                    per = dev.get("per_scanner") or {}
-                    has_seen = any(v is not None for v in per.values())
-                    if not has_seen:
-                        has_seen = any(str(s.get("address", "")).upper() == addr_upper and s.get("rssi") is not None for s in ble_data.get("sightings", []))
-                    if not has_seen:
-                        return "not_home"
-                    found = True
-                    break
-            if not found:
-                return "not_home"
-
-    # Check GPS part - requires hass to read states
-    if gps_entities and hass is not None:
-        for entity_id in gps_entities:
-            try:
-                state = hass.states.get(entity_id)  # type: ignore[attr-defined]
-                if state is None:
-                    # If entity not found, treat as away
-                    return "not_home"
-                s = str(state.state).lower()
-                if s not in ("home", "not_home"):
-                    # For device_tracker, home is home, else away
-                    # If state is not home, treat as away
-                    if s != "home":
-                        return "not_home"
-                elif s == "not_home":
-                    return "not_home"
-            except Exception:
-                continue
-    elif gps_entities and hass is None:
-        # If we don't have hass, we can't check GPS, assume home for now
-        # The caller with hass will do proper check in _async_update_target_trackers
-        pass
-
-    return "home"
-
-
-async def _async_update_target_trackers(hass: HomeAssistant) -> None:
-    """Update all target device_tracker entities with current BLE state."""
-    try:
-        # Get current BLE data
-        ble_data = hass.data.get(DOMAIN, {}).get("ble_data")
-        if not ble_data:
-            # Try to load from store
-            try:
-                ble_store = _get_ble_data_store(hass)
-                cached = await ble_store.async_load()
-                if isinstance(cached, dict) and cached:
-                    ble_data = cached
-            except Exception:  # noqa: BLE001
-                ble_data = None
-        targets = hass.data.get(DOMAIN, {}).get("targets")
-        if targets is None:
-            targets = await _async_load_targets(hass)
-            hass.data.setdefault(DOMAIN, {})["targets"] = targets
-
-        # Update each tracker's state via hass.data[DOMAIN]["trackers"]
-        trackers: dict[str, Any] = hass.data.get(DOMAIN, {}).get("trackers", {})
-        for target in targets:
-            tid = target.get("id")
-            if not tid:
-                continue
-            tracker = trackers.get(tid)
-            # If no tracker exists (e.g., target created after setup), skip - it will be created via websocket create
-            if not tracker:
-                continue
-            try:
-                # Update target data (name, icon, type) on tracker
-                if hasattr(tracker, "update_target"):
-                    tracker.update_target(target)  # type: ignore[attr-defined]
-                new_state = _compute_target_state(target, ble_data, hass)
-                # Update tracker state
-                if hasattr(tracker, "async_update_state"):
-                    await tracker.async_update_state(new_state)
-                else:
-                    # Fallback: set state and async_write_ha_state
-                    tracker._state = new_state  # type: ignore[attr-defined]
-                    if hasattr(tracker, "async_write_ha_state"):
-                        tracker.async_write_ha_state()
-            except Exception as err:  # noqa: BLE001
-                LOGGER.debug("Failed to update tracker %s: %s", tid, err)
-
-        # Push target updates to frontend subscribers
-        target_subs = hass.data.get(DOMAIN, {}).get("target_subscribers", set())
-        if target_subs:
-            try:
-                from homeassistant.components import websocket_api as ws_api
-
-                # Build enriched targets with computed state
-                enriched = []
-                for t in targets:
-                    enriched.append({**t, "state": _compute_target_state(t, ble_data, hass), "ble_devices": t.get("ble_devices") or t.get("devices") or []})
-                for conn, msg_id in list(target_subs):
-                    try:
-                        conn.send_message(ws_api.event_message(msg_id, {"type": "targets_update", "targets": enriched}))
-                    except Exception:  # noqa: BLE001
-                        pass
-            except Exception:  # noqa: BLE001
-                pass
-    except Exception as err:  # noqa: BLE001
-        LOGGER.debug("Failed to update target trackers: %s", err)
 
 
 async def _async_update_ble_data_and_push(hass: HomeAssistant, *_args) -> None:
     """Fetch BLE data, store to .storage/spatialHA.* and push to subscribers."""
     try:
-        # Import here to avoid circular import
-        from .websocket import _get_ble_data
-
         data = _get_ble_data(hass)
         # Add timestamp
         import time
@@ -755,13 +365,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as err2:  # noqa: BLE001
             LOGGER.debug("Failed to forward device_tracker: %s / %s", err, err2)
 
-    # Resolve JS path without blocking event loop
-    js_path: pathlib.Path = await hass.async_add_executor_job(_resolve_js_path_sync)
-
+    # Serve the whole frontend directory (panel + feature modules), no blocking I/O
+    frontend_dir = pathlib.Path(__file__).parent / "frontend"
     version_str = await _get_version(hass)
-    static_url = PANEL_URL
-    legacy_static = "/api/panels/spatialHA/spatialHA-panel.js"
-    js_url = f"{static_url}?v={version_str}"
+    static_dir = "/api/panels/spatialHA"
+    legacy_dir = "/api/panels/spatialha"
+    js_url = f"{PANEL_URL}?v={version_str}"
 
     # Use new async API to avoid blocking I/O
     try:
@@ -769,23 +378,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         await hass.http.async_register_static_paths(
             [
-                StaticPathConfig(static_url, str(js_path), False),
+                StaticPathConfig(static_dir, str(frontend_dir), False),
             ]
         )
         # Register legacy capital URL as well
-        if legacy_static != static_url:
+        if legacy_dir != static_dir:
             try:
                 await hass.http.async_register_static_paths(
-                    [StaticPathConfig(legacy_static, str(js_path), False)]
+                    [StaticPathConfig(legacy_dir, str(frontend_dir), False)]
                 )
             except Exception:  # noqa: BLE001
                 pass
     except AttributeError:
         # Fallback for older HA where async_register_static_paths not available
         try:
-            hass.http.register_static_path(static_url, str(js_path), cache_headers=False)  # type: ignore[attr-defined]
-            if legacy_static != static_url:
-                hass.http.register_static_path(legacy_static, str(js_path), cache_headers=False)  # type: ignore[attr-defined]
+            hass.http.register_static_path(static_dir, str(frontend_dir), cache_headers=False)  # type: ignore[attr-defined]
+            if legacy_dir != static_dir:
+                hass.http.register_static_path(legacy_dir, str(frontend_dir), cache_headers=False)  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             pass
 
@@ -849,7 +458,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # If no more entries, clean up version cache and stop BLE polling
     # Check if any config entries remain for this domain
-    remaining_entries = [k for k in hass.data.get(DOMAIN, {}).keys() if k not in ("version", "websocket_registered", "settings", "ble_data", "ble_subscribers", "target_subscribers", "trackers", "ble_unsub_interval", "update_interval", "targets")]
+    remaining_entries = [k for k in hass.data.get(DOMAIN, {}).keys() if k not in ("version", "websocket_registered", "settings", "ble_data", "ble_subscribers", "target_subscribers", "gps_subscribers", "floorplan_subscribers", "trackers", "ble_unsub_interval", "update_interval", "targets", "floorplan")]
     if not remaining_entries:
         # Cancel BLE polling
         unsub = hass.data.get(DOMAIN, {}).pop("ble_unsub_interval", None)

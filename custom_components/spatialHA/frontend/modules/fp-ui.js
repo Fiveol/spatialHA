@@ -1,0 +1,106 @@
+export const FloorplanUiMixin = {
+    _renderFloorplan() {
+      if (this._floorplanLoading) return `<p class="loading">Loading floorplan…</p>`;
+      if (this._floorplanError) return `<p class="error">Error: ${this._esc(this._floorplanError)}</p><p><button id="floorplan-retry">Retry</button></p>`;
+      if (!this._floorplan || !this._floorplan.floors) return `<p>No floorplan.</p>`;
+      const floor = this._getActiveFloor();
+      if (!floor) return `<p>No active floor.</p>`;
+      const unitsSel = `<select id="floorplan-units"><option value="meters" ${this._floorplanUnits === "meters" ? "selected" : ""}>Meters</option><option value="feet_inches" ${this._floorplanUnits === "feet_inches" ? "selected" : ""}>Feet/Inches</option></select>`;
+      const floorTabs = this._floorplan.floors.map((f) => `<button data-floor="${this._esc(f.id)}" style="padding:6px 12px; margin:2px; border:1px solid #ccc; border-radius:4px; background:${f.id === this._selectedFloorId ? "#03a9f4" : "#fafafa"}; color:${f.id === this._selectedFloorId ? "white" : "#333"}; cursor:pointer;">${this._esc(f.name)} (L${f.level})</button>`).join("");
+      const wallsHtml = (floor.walls || []).map((w) => {
+        const p1 = floor.points.find((p) => p.id === w.p1), p2 = floor.points.find((p) => p.id === w.p2);
+        const len = p1 && p2 ? Math.hypot(p1.x - p2.x, p1.y - p2.y) : 0;
+        return `<tr><td>${this._esc(this._metersToDisplay(len))}</td><td><button data-del-wall="${this._esc(w.id)}">Delete</button></td></tr>`;
+      }).join("") || `<tr><td colspan="2"><em>No walls</em></td></tr>`;
+      const roomsHtml = (floor.rooms || []).map((r) => `<tr><td>${this._esc(r.name)}</td><td>${this._esc(String((r.point_ids || []).length))} pts</td><td><input type="color" value="${this._esc(r.color || "#6496ff")}" data-room-color="${this._esc(r.id)}" style="width:40px;"></td><td><button data-del-room="${this._esc(r.id)}">Delete</button></td></tr>`).join("") || `<tr><td colspan="4"><em>No rooms</em></td></tr>`;
+      const doorsHtml = ((floor.doors || []).map((dr) => `<tr><td>${this._esc(dr.type)}</td><td>${this._esc(this._formatMetersForInput(dr.width || 0.9))}</td><td>${this._esc(String(Math.round(((parseFloat(dr.rotation) || 0)))))}°</td><td>${this._esc(dr.swing || "")}</td><td><button data-del-door="${this._esc(dr.id)}">Delete</button></td></tr>`).join("") || `<tr><td colspan="5"><em>No doors - click Door / Double / Garage then click canvas to place</em></td></tr>`);
+      const selDoor = this._selectedDoorId ? (floor.doors || []).find((d) => d.id === this._selectedDoorId) : null;
+      const doorEditHtml = selDoor ? `
+        <div style="border:1px solid #ff9800; padding:10px; border-radius:6px; margin-top:8px;">
+          <h4>Selected Door (${this._esc(selDoor.type)})</h4>
+          <label>X: <input id="door-x" type="text" value="${this._esc(this._formatMetersForInput(selDoor.x || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+          <label>Y: <input id="door-y" type="text" value="${this._esc(this._formatMetersForInput(selDoor.y || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+          <label>Rotation (deg): <input id="door-rot" type="number" step="5" value="${Math.round(parseFloat(selDoor.rotation) || 0)}" style="width:80px"></label>
+          <button id="door-rot-left" title="Rotate -15°">⟲</button><button id="door-rot-right" title="Rotate +15°">⟳</button><br>
+          <label>Size: <input id="door-width" type="text" value="${this._esc(this._formatMetersForInput(selDoor.width || 0.9))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+          <label>Swing: <select id="door-swing">
+            <option value="left" ${selDoor.swing === "left" ? "selected" : ""}>left</option>
+            <option value="right" ${selDoor.swing === "right" ? "selected" : ""}>right</option>
+            <option value="up" ${selDoor.swing === "up" ? "selected" : ""}>up</option>
+            <option value="none" ${selDoor.swing === "none" ? "selected" : ""}>none</option>
+          </select></label><br>
+          <button id="door-save">Save Door</button>
+        </div>` : (this._placingDoorType ? `<p><em>Placing ${this._esc(this._placingDoorType)} - click on canvas to place (Esc to cancel).</em> <button id="door-cancel-place">Cancel</button></p>` : "");
+      const dd = this._doorDefaults();
+      const windowsHtml = (((floor.windows || []).map((wn) => `<tr><td>${this._esc(this._formatMetersForInput(wn.width || 1.2))} × ${this._esc(this._formatMetersForInput(wn.height || 1.2))}</td><td>${this._esc(this._formatMetersForInput(wn.height_from_floor || 0.9))}</td><td>${this._esc(String(Math.round(parseFloat(wn.rotation) || 0)))}°</td><td><button data-del-window="${this._esc(wn.id)}">Delete</button></td></tr>`).join("")) || `<tr><td colspan="4"><em>No windows - click Add Window then click canvas (origin = lower-left corner)</em></td></tr>`);
+      const selWin = this._selectedWindowId ? (floor.windows || []).find((w) => w.id === this._selectedWindowId) : null;
+      const windowEditHtml = selWin ? `
+        <div style="border:1px solid #22d3ee; padding:10px; border-radius:6px; margin-top:8px;">
+          <h4>Selected Window (origin = lower-left corner)</h4>
+          <label>X: <input id="window-x" type="text" value="${this._esc(this._formatMetersForInput(selWin.x || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+          <label>Y: <input id="window-y" type="text" value="${this._esc(this._formatMetersForInput(selWin.y || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+          <label>Width: <input id="window-width" type="text" value="${this._esc(this._formatMetersForInput(selWin.width || 1.2))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+          <label>Height: <input id="window-height" type="text" value="${this._esc(this._formatMetersForInput(selWin.height || 1.2))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+          <label>Height from floor: <input id="window-sill" type="text" value="${this._esc(this._formatMetersForInput(selWin.height_from_floor || 0.9))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+          <label>Rotation (deg): <input id="window-rot" type="number" step="5" value="${Math.round(parseFloat(selWin.rotation) || 0)}" style="width:80px"></label>
+          <button id="window-rot-left" title="Rotate -15°">⟲</button><button id="window-rot-right" title="Rotate +15°">⟳</button><br>
+          <button id="window-save">Save Window</button>
+        </div>` : (this._placingWindow ? `<p><em>Placing window - click on canvas for lower-left corner origin (Esc to cancel).</em> <button id="window-cancel-place">Cancel</button></p>` : "");
+      const wd2 = this._windowDefaults();
+      const windowDefaultsHtml = `
+        <div style="border:1px solid #eee; padding:10px; border-radius:6px; margin-top:12px;"><h4>Default Window (used for new windows)</h4>
+        <label>Width: <input id="def-win-w" type="text" value="${this._esc(this._formatMetersForInput(wd2.width))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <label>Height: <input id="def-win-h" type="text" value="${this._esc(this._formatMetersForInput(wd2.height))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <label>Height from floor: <input id="def-win-sill" type="text" value="${this._esc(this._formatMetersForInput(wd2.height_from_floor))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <button id="window-defs-save">Save Defaults</button></div>`;
+      const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected point at (${this._formatMetersForInput(pt.x)}, ${this._formatMetersForInput(pt.y)}) - double-click to edit` : ""; })() : (this._selectedWindowId ? `Window selected - edit below` : (this._selectedDoorId ? `Door selected - edit below` : (this._selectedWallId ? `Wall selected` : "Left-click selects, double-click point to edit position, right-click point for 4 arrows"))); const doorDefaultsHtml = `
+        <div style="border:1px solid #eee; padding:10px; border-radius:6px; margin-top:12px;"><h4>Default Door Sizes (used for new doors)</h4>
+        <label>Door: <input id="def-door" type="text" value="${this._esc(this._formatMetersForInput(dd["Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <label>Double Door: <input id="def-double" type="text" value="${this._esc(this._formatMetersForInput(dd["Double Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <label>Garage Door: <input id="def-garage" type="text" value="${this._esc(this._formatMetersForInput(dd["Garage Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
+        <button id="door-defs-save">Save Defaults</button></div>`;
+      return `
+        <div class="card">
+          <h2>Floor Plan - ${this._esc(floor.name)}</h2>
+          <p>Floor plan editor. Units: ${unitsSel}.</p>
+          <div style="margin:8px 0; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <button id="floor-add">Add Floor</button>
+            <button id="floor-rename">Rename Floor</button>
+            <button id="floor-delete">Delete Floor</button>
+            <label>Level: <input id="floor-level" type="number" value="${floor.level}" style="width:60px"></label>
+          </div>
+          <div style="display:flex; gap:4px; margin:8px 0; flex-wrap:wrap;">${floorTabs}</div>
+          <div id="floorplan-wrap" style="border:1px solid #333; border-radius:8px; overflow:hidden; background:#14161a; aspect-ratio: 8/5; max-height:520px;">
+            <canvas id="floorplan-canvas" width="800" height="500" style="display:block; cursor:crosshair; width:100%; height:100%; background:#14161a;"></canvas>
+          </div>
+          <p><small>${selectedInfo} | Scale: ${this._floorplanScale.toFixed(1)}px/m</small></p>
+          <div style="margin-top:12px; border:1px solid #eee; padding:10px; border-radius:6px;">
+            <h3>Doors</h3>
+            <p>
+              <button id="door-add-Door">Add Door</button>
+              <button id="door-add-Double">Add Double Door</button>
+              <button id="door-add-Garage">Add Garage Door</button>
+            </p>
+            <table><thead><tr><th>Type</th><th>Size</th><th>Rotation</th><th>Swing</th><th>Action</th></tr></thead><tbody>${doorsHtml}</tbody></table>
+            ${doorEditHtml}
+            ${doorDefaultsHtml}
+          </div>
+          <div style="margin-top:12px; border:1px solid #eee; padding:10px; border-radius:6px;">
+            <h3>Windows</h3>
+            <p><button id="window-add">Add Window</button> <small>origin = lower-left corner, then edit size/height/sill/rotation</small></p>
+            <table><thead><tr><th>Size (W × H)</th><th>Sill Height</th><th>Rotation</th><th>Action</th></tr></thead><tbody>${windowsHtml}</tbody></table>
+            ${windowEditHtml}
+            ${windowDefaultsHtml}
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px;">
+            <div><h3>Walls</h3><p><button id="wall-add">Add Wall (selected + last)</button> <small>or right-drag point to point</small></p><table><thead><tr><th>Length</th><th>Action</th></tr></thead><tbody>${wallsHtml}</tbody></table></div>
+            <div><h3>Rooms</h3><p><button id="room-add">Add Room (all points)</button> <small>or middle-drag across points</small></p><table><thead><tr><th>Name</th><th>Points</th><th>Color</th><th>Action</th></tr></thead><tbody>${roomsHtml}</tbody></table></div>
+          </div>
+          <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+            <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Floor Dimensions (constrains points)</h4><label>Width: <input id="floor-width" type="text" value="${this._esc(this._formatMetersForInput(floor.width || 10))}" placeholder="${this._floorplanUnits === "meters" ? "10.00" : "32' 10.0\" "}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in (e.g. 32' 10\")"}</small><br><label>Depth: <input id="floor-depth" type="text" value="${this._esc(this._formatMetersForInput(floor.depth || 8))}" placeholder="${this._floorplanUnits === "meters" ? "8.00" : "26' 3\" "}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br><label>Height: <input id="floor-height" type="text" value="${this._esc(this._formatMetersForInput(floor.height || 3))}" placeholder="${this._floorplanUnits === "meters" ? "3.00" : "9' 10\" "}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br><button id="dims-save">Save Dimensions</button><h4 style="margin-top:12px;">Floor Alignment</h4><label>Offset X: <input id="align-x" type="text" value="${this._esc(this._formatMetersForInput(floor.offset_x || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br><label>Offset Y: <input id="align-y" type="text" value="${this._esc(this._formatMetersForInput(floor.offset_y || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br><label>Scale: <input id="align-scale" type="number" step="0.1" value="${floor.scale || 1}" style="width:80px"></label><br><label>Rotation (deg): <input id="align-rot" type="number" step="1" value="${(((floor.rotation || 0) * 180 / Math.PI)).toFixed(1)}" style="width:80px"></label><br><button id="align-save">Save Alignment</button></div>
+            <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Points (${floor.points.length})</h4><div style="max-height:150px; overflow:auto;">${floor.points.map((p) => `<div style="padding:4px; background:${p.id === this._selectedPointId ? "#e3f2fd" : "transparent"}; border-radius:4px;">(${this._esc(this._formatMetersForInput(p.x))}, ${this._esc(this._formatMetersForInput(p.y))}) <button data-del-point="${this._esc(p.id)}" style="float:right;">Delete</button></div>`).join("")}</div><p><button id="point-add">Add Point at 0,0</button></p></div>
+          </div>
+        </div>
+      `;
+    }
+};
