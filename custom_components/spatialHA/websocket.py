@@ -1156,7 +1156,15 @@ async def handle_floorplan_get(
         connection.send_error(msg["id"], "floorplan_get_failed", str(err))
 
 
-@websocket_api.websocket_command({vol.Required("type"): "spatialHA/floorplan/set"})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "spatialHA/floorplan/set",
+        vol.Optional("floorplan"): dict,
+        vol.Optional("floors"): list,
+        vol.Optional("units"): str,
+        vol.Optional("active_floor_id"): str,
+    }
+)
 @websocket_api.async_response
 async def handle_floorplan_set(
     hass: HomeAssistant,
