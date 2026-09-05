@@ -291,8 +291,56 @@ class SpatialHAPanel extends HTMLElement {
     return Number(m).toFixed(2) + " m";
   }
   _displayToMeters(v) {
+    if (typeof v === "string") return this._parseDisplayToMeters(v);
     if (this._floorplanUnits === "feet_inches") return v * 0.3048;
     return v;
+  }
+  _parseDisplayToMeters(str) {
+    if (str === null || str === undefined) return NaN;
+    if (typeof str === "number") {
+      if (this._floorplanUnits === "feet_inches") return str * 0.3048;
+      return str;
+    }
+    const s = String(str).trim();
+    if (!s) return NaN;
+    if (this._floorplanUnits !== "feet_inches") {
+      // Meters: allow "2.5", "2.5 m", "250 cm"
+      const m = s.match(/^(-?[\d.]+)\s*(m|meter|meters|cm)?$/i);
+      if (!m) return parseFloat(s);
+      const v = parseFloat(m[1]);
+      if (isNaN(v)) return NaN;
+      if ((m[2] || "").toLowerCase() === "cm") return v / 100;
+      return v;
+    }
+    // Feet/inches: accept 6' 11", 6'11", 6 ft 11 in, 6.5 (feet), 11" (inches), 11 in
+    let m = s.match(/^(-?[\d.]+)\s*(?:'|ft|feet)\s*(-?[\d.]+)?\s*(?:"|″|in|inch|inches)?\s*$/i);
+    if (m) {
+      const feet = parseFloat(m[1]);
+      const inches = m[2] !== undefined && m[2] !== "" ? parseFloat(m[2]) : 0;
+      if (isNaN(feet) || isNaN(inches)) return NaN;
+      const sign = feet < 0 || Object.is(feet, -0) ? -1 : 1;
+      return sign * (Math.abs(feet) * 12 + Math.abs(inches)) * 0.0254;
+    }
+    // Inches only: 11", 11 in
+    m = s.match(/^(-?[\d.]+)\s*(?:"|″|in|inch|inches)\s*$/i);
+    if (m) {
+      const inches = parseFloat(m[1]);
+      if (isNaN(inches)) return NaN;
+      return inches * 0.0254;
+    }
+    // Bare number = feet decimal
+    const v = parseFloat(s);
+    if (isNaN(v)) return NaN;
+    return v * 0.3048;
+  }
+  _formatMetersForInput(m) {
+    if (this._floorplanUnits === "feet_inches") {
+      const totalInches = m / 0.0254;
+      const feet = Math.floor(totalInches / 12);
+      const inches = (totalInches - feet * 12).toFixed(1);
+      return feet + "' " + inches + '"';
+    }
+    return Number(m).toFixed(2);
   }
   _clampToFloor(floor, x, y) {
     const w = parseFloat(floor.width) || 10, d = parseFloat(floor.depth) || 8;
@@ -467,13 +515,12 @@ class SpatialHAPanel extends HTMLElement {
         for (const d of dirs) {
           const ax = s.x + d.dx * 40, ay = s.y + d.dy * 40;
           if (Math.hypot(sx - ax, sy - ay) < 16) {
-            const unitLabel = this._floorplanUnits === "meters" ? "meters" : "feet";
-            const def = this._floorplanUnits === "meters" ? "2" : "6";
+            const unitLabel = this._floorplanUnits === "meters" ? "meters" : "feet/inches (e.g. 6' 11\")";
+            const def = this._floorplanUnits === "meters" ? "2" : "6' 0\"";
             const valStr = prompt("How many " + unitLabel + " away should the new point be placed?", def);
             if (valStr === null) return;
-            const dist = parseFloat(valStr);
-            if (isNaN(dist) || dist <= 0) { alert("Invalid distance"); return; }
-            const distM = this._displayToMeters(dist);
+            const distM = this._parseDisplayToMeters(valStr);
+            if (isNaN(distM) || distM <= 0) { alert("Invalid distance (try 6' 11\" or 2.5)"); return; }
             let newX = pt.x + d.dx * distM;
             let newY = pt.y + d.dy * distM;
             const cl = this._clampToFloor(floor, newX, newY);
@@ -567,16 +614,15 @@ class SpatialHAPanel extends HTMLElement {
     for (const pt of floor.points) {
       const s = this._worldToScreen(pt.x, pt.y, floor);
       if (Math.hypot(sx - s.x, sy - s.y) < 12) {
-        const unitLabel = this._floorplanUnits === "meters" ? "meters" : "feet";
-        const toDisp = (m) => this._floorplanUnits === "meters" ? m.toFixed(2) : (m / 0.3048).toFixed(2);
-        const xs = prompt("New X (" + unitLabel + ")?", toDisp(pt.x));
+        const unitLabel = this._floorplanUnits === "meters" ? "meters" : "feet/inches (e.g. 6' 11\")";
+        const xs = prompt("New X (" + unitLabel + ")?", this._formatMetersForInput(pt.x));
         if (xs === null) return;
-        const ys = prompt("New Y (" + unitLabel + ")?", toDisp(pt.y));
+        const ys = prompt("New Y (" + unitLabel + ")?", this._formatMetersForInput(pt.y));
         if (ys === null) return;
-        const xv = parseFloat(xs), yv = parseFloat(ys);
-        if (isNaN(xv) || isNaN(yv)) { alert("Invalid position"); return; }
+        const xvm = this._parseDisplayToMeters(xs), yvm = this._parseDisplayToMeters(ys);
+        if (isNaN(xvm) || isNaN(yvm)) { alert("Invalid position (try 6' 11\" or 2.5)"); return; }
         this._fpPushUndo();
-        const cl = this._clampToFloor(floor, this._displayToMeters(xv), this._displayToMeters(yv));
+        const cl = this._clampToFloor(floor, xvm, yvm);
         pt.x = cl.x;
         pt.y = cl.y;
         this._saveFloorplan();
@@ -778,7 +824,7 @@ class SpatialHAPanel extends HTMLElement {
       return `<tr><td>${this._esc(this._metersToDisplay(len))}</td><td><button data-del-wall="${this._esc(w.id)}">Delete</button></td></tr>`;
     }).join("") || `<tr><td colspan="2"><em>No walls</em></td></tr>`;
     const roomsHtml = (floor.rooms || []).map((r) => `<tr><td>${this._esc(r.name)}</td><td>${this._esc(String((r.point_ids || []).length))} pts</td><td><input type="color" value="${this._esc(r.color || "#6496ff")}" data-room-color="${this._esc(r.id)}" style="width:40px;"></td><td><button data-del-room="${this._esc(r.id)}">Delete</button></td></tr>`).join("") || `<tr><td colspan="4"><em>No rooms</em></td></tr>`;
-    const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected point at (${pt.x.toFixed(2)}, ${pt.y.toFixed(2)}) m - double-click to edit` : ""; })() : (this._selectedWallId ? `Wall selected` : "Left-click selects, double-click point to edit position, right-click point for 4 arrows");
+    const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected point at (${this._formatMetersForInput(pt.x)}, ${this._formatMetersForInput(pt.y)}) - double-click to edit` : ""; })() : (this._selectedWallId ? `Wall selected` : "Left-click selects, double-click point to edit position, right-click point for 4 arrows");
     return `
       <div class="card">
         <h2>Floor Plan - ${this._esc(floor.name)}</h2>
@@ -799,8 +845,8 @@ class SpatialHAPanel extends HTMLElement {
           <div><h3>Rooms</h3><p><button id="room-add">Add Room (all points)</button></p><table><thead><tr><th>Name</th><th>Points</th><th>Color</th><th>Action</th></tr></thead><tbody>${roomsHtml}</tbody></table></div>
         </div>
         <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:16px;">
-          <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Floor Dimensions (meters, constrains points)</h4><label>Width (m): <input id="floor-width" type="number" step="0.1" min="1" value="${floor.width || 10}" style="width:80px"></label><br><label>Depth (m): <input id="floor-depth" type="number" step="0.1" min="1" value="${floor.depth || 8}" style="width:80px"></label><br><label>Height (m): <input id="floor-height" type="number" step="0.1" min="1" value="${floor.height || 3}" style="width:80px"></label><br><button id="dims-save">Save Dimensions</button><h4 style="margin-top:12px;">Floor Alignment</h4><label>Offset X (m): <input id="align-x" type="number" step="0.1" value="${floor.offset_x || 0}" style="width:80px"></label><br><label>Offset Y (m): <input id="align-y" type="number" step="0.1" value="${floor.offset_y || 0}" style="width:80px"></label><br><label>Scale: <input id="align-scale" type="number" step="0.1" value="${floor.scale || 1}" style="width:80px"></label><br><label>Rotation (deg): <input id="align-rot" type="number" step="1" value="${(((floor.rotation || 0) * 180 / Math.PI)).toFixed(1)}" style="width:80px"></label><br><button id="align-save">Save Alignment</button></div>
-          <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Points (${floor.points.length})</h4><div style="max-height:150px; overflow:auto;">${floor.points.map((p) => `<div style="padding:4px; background:${p.id === this._selectedPointId ? "#e3f2fd" : "transparent"}; border-radius:4px;">(${p.x.toFixed(2)},${p.y.toFixed(2)}) <button data-del-point="${this._esc(p.id)}" style="float:right;">Delete</button></div>`).join("")}</div><p><button id="point-add">Add Point at 0,0</button></p></div>
+          <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Floor Dimensions (constrains points)</h4><label>Width: <input id="floor-width" type="text" value="${this._esc(this._formatMetersForInput(floor.width || 10))}" placeholder="${this._floorplanUnits === "meters" ? "10.00" : "32' 10.0\" "}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in (e.g. 32' 10\")"}</small><br><label>Depth: <input id="floor-depth" type="text" value="${this._esc(this._formatMetersForInput(floor.depth || 8))}" placeholder="${this._floorplanUnits === "meters" ? "8.00" : "26' 3\" "}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br><label>Height: <input id="floor-height" type="text" value="${this._esc(this._formatMetersForInput(floor.height || 3))}" placeholder="${this._floorplanUnits === "meters" ? "3.00" : "9' 10\" "}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br><button id="dims-save">Save Dimensions</button><h4 style="margin-top:12px;">Floor Alignment</h4><label>Offset X: <input id="align-x" type="text" value="${this._esc(this._formatMetersForInput(floor.offset_x || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br><label>Offset Y: <input id="align-y" type="text" value="${this._esc(this._formatMetersForInput(floor.offset_y || 0))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br><label>Scale: <input id="align-scale" type="number" step="0.1" value="${floor.scale || 1}" style="width:80px"></label><br><label>Rotation (deg): <input id="align-rot" type="number" step="1" value="${(((floor.rotation || 0) * 180 / Math.PI)).toFixed(1)}" style="width:80px"></label><br><button id="align-save">Save Alignment</button></div>
+          <div style="border:1px solid #eee; padding:10px; border-radius:6px;"><h4>Points (${floor.points.length})</h4><div style="max-height:150px; overflow:auto;">${floor.points.map((p) => `<div style="padding:4px; background:${p.id === this._selectedPointId ? "#e3f2fd" : "transparent"}; border-radius:4px;">(${this._esc(this._formatMetersForInput(p.x))}, ${this._esc(this._formatMetersForInput(p.y))}) <button data-del-point="${this._esc(p.id)}" style="float:right;">Delete</button></div>`).join("")}</div><p><button id="point-add">Add Point at 0,0</button></p></div>
         </div>
       </div>
     `;
@@ -1547,8 +1593,8 @@ class SpatialHAPanel extends HTMLElement {
       const f = this._getActiveFloor(); if (!f) return;
       this._fpPushUndo();
       const ax = this.shadowRoot.getElementById("align-x"), ay = this.shadowRoot.getElementById("align-y"), sc = this.shadowRoot.getElementById("align-scale"), rt = this.shadowRoot.getElementById("align-rot");
-      if (ax) f.offset_x = parseFloat(ax.value) || 0;
-      if (ay) f.offset_y = parseFloat(ay.value) || 0;
+      if (ax) { const v = this._parseDisplayToMeters(ax.value); if (!isNaN(v)) f.offset_x = v; }
+      if (ay) { const v = this._parseDisplayToMeters(ay.value); if (!isNaN(v)) f.offset_y = v; }
       if (sc) f.scale = parseFloat(sc.value) || 1;
       if (rt) f.rotation = (parseFloat(rt.value) || 0) * Math.PI / 180;
       this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
@@ -1558,9 +1604,9 @@ class SpatialHAPanel extends HTMLElement {
       const f = this._getActiveFloor(); if (!f) return;
       this._fpPushUndo();
       const fw = this.shadowRoot.getElementById("floor-width"), fd = this.shadowRoot.getElementById("floor-depth"), fh = this.shadowRoot.getElementById("floor-height");
-      if (fw) f.width = Math.max(1, parseFloat(fw.value) || 10);
-      if (fd) f.depth = Math.max(1, parseFloat(fd.value) || 8);
-      if (fh) f.height = Math.max(1, parseFloat(fh.value) || 3);
+      if (fw) { const v = this._parseDisplayToMeters(fw.value); if (!isNaN(v) && v >= 0.3) f.width = v; }
+      if (fd) { const v = this._parseDisplayToMeters(fd.value); if (!isNaN(v) && v >= 0.3) f.depth = v; }
+      if (fh) { const v = this._parseDisplayToMeters(fh.value); if (!isNaN(v) && v >= 0.3) f.height = v; }
       // Constrain all points into new dimensions
       for (const pt of (f.points || [])) {
         const cl = this._clampToFloor(f, pt.x, pt.y);
