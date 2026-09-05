@@ -59,6 +59,8 @@ class SpatialHAPanel extends HTMLElement {
     this._placingDoorType = null;
     this._selectedWindowId = null;
     this._placingWindow = false;
+    this._selectedReceiverId = null;
+    this._placingReceiver = false;
     // Floorplan 3D preview state
     this._fpMode = "2d";
     this._fpView = "iso";
@@ -522,7 +524,7 @@ class SpatialHAPanel extends HTMLElement {
       fpCanvas.onmousedown = (e) => this._handleFloorplanMouseDown(e);
       fpCanvas.onmousemove = (e) => this._handleFloorplanMouseMove(e);
       fpCanvas.onmouseup = (e) => this._handleFloorplanMouseUp(e);
-      fpCanvas.onwheel = (e) => this._handleFloorplanWheel(e);
+      fpCanvas.addEventListener("wheel", (e) => this._handleFloorplanWheel(e), { passive: false });
       fpCanvas.tabIndex = 0;
       fpCanvas.onkeydown = (e) => this._handleFloorplanKeyDown(e);
       // Draw after DOM ready
@@ -588,12 +590,12 @@ class SpatialHAPanel extends HTMLElement {
       };
       hc.onmouseup = () => { this._homeRotating = false; hc.style.cursor = "grab"; };
       hc.onmouseleave = () => { this._homeRotating = false; hc.style.cursor = "grab"; };
-      hc.onwheel = (e) => {
+      hc.addEventListener("wheel", (e) => {
         e.preventDefault();
         this._homeZoom = Math.max(0.4, Math.min(3, (this._homeZoom || 1) * (e.deltaY > 0 ? 0.92 : 1.08)));
         if (typeof this._requestDraw === "function") this._requestDraw("home3d", () => this._renderHomeIsoCanvas());
         else this._renderHomeIsoCanvas();
-      };
+      }, { passive: false });
     }
     this.shadowRoot.querySelectorAll("[data-home-view]").forEach((b) => b.addEventListener("click", () => {
       if (typeof this._homeSetView === "function") this._homeSetView(b.getAttribute("data-home-view"));
@@ -669,7 +671,7 @@ class SpatialHAPanel extends HTMLElement {
       const b = this.shadowRoot.getElementById(id);
       if (b) b.addEventListener("click", () => {
         if (this._placingDoorType === type) this._placingDoorType = null;
-        else { this._placingDoorType = type; this._selectedDoorId = null; }
+        else { this._placingDoorType = type; this._selectedDoorId = null; this._placingWindow = false; this._placingReceiver = false; }
         this._render(); this._renderFloorplanCanvas();
       });
     };
@@ -733,11 +735,26 @@ class SpatialHAPanel extends HTMLElement {
     const winAdd = this.shadowRoot.getElementById("window-add");
     if (winAdd) winAdd.addEventListener("click", () => {
       if (this._placingWindow) this._placingWindow = false;
-      else { this._placingWindow = true; this._placingDoorType = null; this._selectedWindowId = null; }
+      else { this._placingWindow = true; this._placingDoorType = null; this._placingReceiver = false; this._selectedWindowId = null; }
       this._render(); this._renderFloorplanCanvas();
     });
     const winCancel = this.shadowRoot.getElementById("window-cancel-place");
     if (winCancel) winCancel.addEventListener("click", () => { this._placingWindow = false; this._render(); this._renderFloorplanCanvas(); });
+    const rxAdd = this.shadowRoot.getElementById("receiver-add");
+    if (rxAdd) rxAdd.addEventListener("click", () => {
+      if (this._placingReceiver) this._placingReceiver = false;
+      else { this._placingReceiver = true; this._placingDoorType = null; this._placingWindow = false; this._selectedReceiverId = null; }
+      this._render(); this._renderFloorplanCanvas();
+    });
+    const rxCancel = this.shadowRoot.getElementById("receiver-cancel-place");
+    if (rxCancel) rxCancel.addEventListener("click", () => { this._placingReceiver = false; this._render(); this._renderFloorplanCanvas(); });
+    this.shadowRoot.querySelectorAll("[data-del-receiver]").forEach((b) => b.addEventListener("click", () => {
+      const f = this._getActiveFloor(); if (!f) return;
+      this._fpPushUndo();
+      f.receivers = (f.receivers || []).filter((r) => r.id !== b.getAttribute("data-del-receiver"));
+      if (this._selectedReceiverId === b.getAttribute("data-del-receiver")) this._selectedReceiverId = null;
+      this._saveFloorplan(); this._render(); this._renderFloorplanCanvas();
+    }));
     this.shadowRoot.querySelectorAll("[data-del-window]").forEach((b) => b.addEventListener("click", () => {
       const f = this._getActiveFloor(); if (!f) return;
       this._fpPushUndo();

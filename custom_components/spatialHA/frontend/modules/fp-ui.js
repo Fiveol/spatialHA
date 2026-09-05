@@ -46,6 +46,8 @@ export const FloorplanUiMixin = {
           <button id="window-rot-left" title="Rotate -15°">⟲</button><button id="window-rot-right" title="Rotate +15°">⟳</button><br>
           <button id="window-save">Save Window</button>
         </div>` : (this._placingWindow ? `<p><em>Placing window - click on canvas for lower-left corner origin (Esc to cancel).</em> <button id="window-cancel-place">Cancel</button></p>` : "");
+      const receiversHtml = (((floor.receivers || []).map((rx) => `<tr><td>${this._esc(rx.name || "Receiver")}</td><td>(${this._esc(this._formatMetersForInput(rx.x))}, ${this._esc(this._formatMetersForInput(rx.y))})</td><td><button data-del-receiver="${this._esc(rx.id)}">Delete</button></td></tr>`).join("")) || `<tr><td colspan="3"><em>No receivers - click Add Receiver then click canvas to place</em></td></tr>`);
+      const receiverHintHtml = this._placingReceiver ? `<p><em>Placing receiver - click on canvas to place (Esc to cancel).</em> <button id="receiver-cancel-place">Cancel</button></p>` : "";
       const wd2 = this._windowDefaults();
       const windowDefaultsHtml = `
         <div style="border:1px solid #eee; padding:10px; border-radius:6px; margin-top:12px;"><h4>Default Window (used for new windows)</h4>
@@ -53,7 +55,7 @@ export const FloorplanUiMixin = {
         <label>Height: <input id="def-win-h" type="text" value="${this._esc(this._formatMetersForInput(wd2.height))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
         <label>Height from floor: <input id="def-win-sill" type="text" value="${this._esc(this._formatMetersForInput(wd2.height_from_floor))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
         <button id="window-defs-save">Save Defaults</button></div>`;
-      const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected point at (${this._formatMetersForInput(pt.x)}, ${this._formatMetersForInput(pt.y)}) - double-click to edit` : ""; })() : (this._selectedWindowId ? `Window selected - edit below` : (this._selectedDoorId ? `Door selected - edit below` : (this._selectedWallId ? `Wall selected` : "Left-click selects, double-click point to edit position, right-click point for 4 arrows"))); const doorDefaultsHtml = `
+      const selectedInfo = this._selectedPointId ? (() => { const pt = floor.points.find((p) => p.id === this._selectedPointId); return pt ? `Selected point at (${this._formatMetersForInput(pt.x)}, ${this._formatMetersForInput(pt.y)}) - double-click to edit` : ""; })() : (this._selectedReceiverId ? `Receiver selected - double-click to rename or move` : (this._selectedWindowId ? `Window selected - edit below` : (this._selectedDoorId ? `Door selected - edit below` : (this._selectedWallId ? `Wall selected` : "Left-click selects, double-click point to edit position, right-click point for 4 arrows")))); const doorDefaultsHtml = `
         <div style="border:1px solid #eee; padding:10px; border-radius:6px; margin-top:12px;"><h4>Default Door Sizes (used for new doors)</h4>
         <label>Door: <input id="def-door" type="text" value="${this._esc(this._formatMetersForInput(dd["Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
         <label>Double Door: <input id="def-double" type="text" value="${this._esc(this._formatMetersForInput(dd["Double Door"]))}" style="width:110px"></label> <small>${this._floorplanUnits === "meters" ? "meters" : "ft/in"}</small><br>
@@ -108,6 +110,12 @@ export const FloorplanUiMixin = {
             <table><thead><tr><th>Size (W × H)</th><th>Sill Height</th><th>Rotation</th><th>Action</th></tr></thead><tbody>${windowsHtml}</tbody></table>
             ${windowEditHtml}
             ${windowDefaultsHtml}
+          </div>
+          <div style="margin-top:12px; border:1px solid #eee; padding:10px; border-radius:6px;">
+            <h3>BLE Receivers</h3>
+            <p><button id="receiver-add">Add Receiver</button> <small>click canvas to place</small></p>
+            <table><thead><tr><th>Name</th><th>Position</th><th>Action</th></tr></thead><tbody>${receiversHtml}</tbody></table>
+            ${receiverHintHtml}
           </div>
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px;">
             <div><h3>Walls</h3><p><button id="wall-add">Add Wall (selected + last)</button> <small>or right-drag point to point</small></p><table><thead><tr><th>Length</th><th>Action</th></tr></thead><tbody>${wallsHtml}</tbody></table></div>

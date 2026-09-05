@@ -48,7 +48,7 @@ def _default_floorplan() -> dict:
                 "rooms": [],
                 "doors": [],
                 "windows": [],
-                "windows": [],
+                "receivers": [],
             }
         ],
     }
@@ -103,6 +103,17 @@ async def _async_load_floorplan(hass: HomeAssistant) -> dict:
         floor.setdefault("rooms", [])
         floor.setdefault("doors", [])
         floor.setdefault("windows", [])
+        floor.setdefault("receivers", [])
+        # Normalize receivers (BLE receiver markers; placement only for now)
+        for rx in floor["receivers"]:
+            try:
+                rx["x"] = float(rx.get("x", 0) or 0)
+                rx["y"] = float(rx.get("y", 0) or 0)
+            except Exception:
+                rx["x"] = 0.0
+                rx["y"] = 0.0
+            if not rx.get("name"):
+                rx["name"] = "Receiver"
         # Normalize doors
         for door in floor["doors"]:
             door.setdefault("type", "Door")

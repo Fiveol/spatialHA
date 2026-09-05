@@ -152,6 +152,23 @@ export const FloorplanCanvasMixin = {
           ctx.beginPath(); ctx.arc(s.x, s.y, 11, 0, Math.PI * 2); ctx.stroke();
         }
       }
+      // BLE receivers (placement markers only for now)
+      for (const rx of (floor.receivers || [])) {
+        const s = this._worldToScreen(rx.x, rx.y, floor);
+        const isSelected = this._selectedReceiverId === rx.id;
+        ctx.fillStyle = isSelected ? "#ff9800" : "#22c55e";
+        ctx.strokeStyle = "#0b0e13"; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y - 7); ctx.lineTo(s.x + 7, s.y); ctx.lineTo(s.x, s.y + 7); ctx.lineTo(s.x - 7, s.y);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = isSelected ? "#ff9800" : "rgba(34,197,94,0.8)"; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(s.x, s.y, 11, -Math.PI * 0.35, Math.PI * 0.35); ctx.stroke();
+        ctx.beginPath(); ctx.arc(s.x, s.y, 11, Math.PI * 0.65, Math.PI * 1.35); ctx.stroke();
+        if (isSelected) {
+          ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(s.x, s.y, 15, 0, Math.PI * 2); ctx.stroke();
+        }
+      }
       if (this._contextMenu && this._contextMenu.pointId) {
         const pt = floor.points.find((p) => p.id === this._contextMenu.pointId);
         if (pt) {
@@ -262,6 +279,25 @@ export const FloorplanCanvasMixin = {
         this._fpRedraw();
         return;
       }
+      // Receiver placement mode: left-click places a BLE receiver marker
+      if (this._placingReceiver && e.button !== 2) {
+        const w = this._fpToWorld(sx, sy, floor);
+        const snr = (v) => (typeof this._fpSnapVal === "function" ? this._fpSnapVal(v) : v);
+        const cl = this._clampToFloor(floor, snr(w.x), snr(w.y));
+        this._fpPushUndo();
+        const nid = "receiver_" + Date.now();
+        floor.receivers = floor.receivers || [];
+        floor.receivers.push({ id: nid, name: "Receiver", x: cl.x, y: cl.y });
+        this._selectedReceiverId = nid;
+        this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null;
+        this._placingReceiver = false;
+        this._placingDoorType = null;
+        this._placingWindow = false;
+        this._saveFloorplan();
+        this._render();
+        this._fpRedraw();
+        return;
+      }
       // Door placement mode: left-click places a door of the pending type
       if (this._placingDoorType && e.button !== 2) {
         const w = this._fpToWorld(sx, sy, floor);
@@ -295,6 +331,7 @@ export const FloorplanCanvasMixin = {
             this._contextMenu = { x: sx, y: sy, pointId: pt.id };
             this._selectedPointId = pt.id;
             this._selectedDoorId = null;
+            this._selectedReceiverId = null;
             this._fpRedraw();
             return;
           } else {
@@ -302,6 +339,7 @@ export const FloorplanCanvasMixin = {
             this._selectedWallId = null;
             this._selectedDoorId = null;
             this._selectedWindowId = null;
+            this._selectedReceiverId = null;
             this._contextMenu = null;
             this._fpRedraw();
             return;
@@ -313,8 +351,8 @@ export const FloorplanCanvasMixin = {
         const hit = this._doorHitTest(sx, sy, floor, 10);
         if (hit) {
           this._selectedDoorId = hit.id;
-          this._selectedPointId = null; this._selectedWallId = null; this._selectedWindowId = null; this._contextMenu = null;
-          this._placingDoorType = null; this._placingWindow = false;
+          this._selectedPointId = null; this._selectedWallId = null; this._selectedWindowId = null; this._selectedReceiverId = null; this._contextMenu = null;
+          this._placingDoorType = null; this._placingWindow = false; this._placingReceiver = false;
           this._render();
           this._fpRedraw();
           return;
@@ -325,8 +363,20 @@ export const FloorplanCanvasMixin = {
         const hit = this._windowHitTest(sx, sy, floor, 10);
         if (hit) {
           this._selectedWindowId = hit.id;
-          this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._contextMenu = null;
-          this._placingDoorType = null; this._placingWindow = false;
+          this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedReceiverId = null; this._contextMenu = null;
+          this._placingDoorType = null; this._placingWindow = false; this._placingReceiver = false;
+          this._render();
+          this._fpRedraw();
+          return;
+        }
+      }
+      // Receivers
+      {
+        const hit = this._receiverHitTest(sx, sy, floor, 12);
+        if (hit) {
+          this._selectedReceiverId = hit.id;
+          this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._contextMenu = null;
+          this._placingDoorType = null; this._placingWindow = false; this._placingReceiver = false;
           this._render();
           this._fpRedraw();
           return;
@@ -340,11 +390,11 @@ export const FloorplanCanvasMixin = {
         const dist = Math.abs((s2.y - s1.y) * sx - (s2.x - s1.x) * sy + s2.x * s1.y - s2.y * s1.x) / len;
         const dot = ((sx - s1.x) * (s2.x - s1.x) + (sy - s1.y) * (s2.y - s1.y)) / (len * len);
         if (dist < 10 && dot >= 0 && dot <= 1) {
-          this._selectedWallId = wall.id; this._selectedPointId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._contextMenu = null; this._fpRedraw(); return;
+          this._selectedWallId = wall.id; this._selectedPointId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._selectedReceiverId = null; this._contextMenu = null; this._fpRedraw(); return;
         }
       }
-      this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._contextMenu = null;
-      if (this._placingDoorType || this._placingWindow) { this._placingDoorType = null; this._placingWindow = false; this._render(); }
+      this._selectedPointId = null; this._selectedWallId = null; this._selectedDoorId = null; this._selectedWindowId = null; this._selectedReceiverId = null; this._contextMenu = null;
+      if (this._placingDoorType || this._placingWindow || this._placingReceiver) { this._placingDoorType = null; this._placingWindow = false; this._placingReceiver = false; this._render(); }
       this._fpRedraw();
     },
 
@@ -375,6 +425,30 @@ export const FloorplanCanvasMixin = {
           this._fpRedraw();
           return;
         }
+      }
+      const rx = this._receiverHitTest(sx, sy, floor, 12);
+      if (rx) {
+        const nm = prompt("Receiver name?", rx.name || "Receiver");
+        if (nm === null) return;
+        const unitLabel = this._floorplanUnits === "meters" ? "meters" : "feet/inches (e.g. 6' 11\")";
+        const xs = prompt("New X (" + unitLabel + ")?", this._formatMetersForInput(rx.x));
+        if (xs === null) return;
+        const ys = prompt("New Y (" + unitLabel + ")?", this._formatMetersForInput(rx.y));
+        if (ys === null) return;
+        const xvm = this._parseDisplayToMeters(xs), yvm = this._parseDisplayToMeters(ys);
+        if (isNaN(xvm) || isNaN(yvm)) { alert("Invalid position (try 6' 11\" or 2.5)"); return; }
+        this._fpPushUndo();
+        const sxv = typeof this._fpSnapVal === "function" ? this._fpSnapVal(xvm) : xvm;
+        const syv = typeof this._fpSnapVal === "function" ? this._fpSnapVal(yvm) : yvm;
+        const cl = this._clampToFloor(floor, sxv, syv);
+        rx.name = (nm.trim() || "Receiver");
+        rx.x = cl.x;
+        rx.y = cl.y;
+        this._selectedReceiverId = rx.id;
+        this._saveFloorplan();
+        this._render();
+        this._fpRedraw();
+        return;
       }
     },
 
@@ -516,9 +590,10 @@ export const FloorplanCanvasMixin = {
       const isFp = this._activeTab === "floorplan";
       const isHome = this._activeTab === "home";
       if (!isFp && !isHome) return;
-      if (isFp && e.key === "Escape" && (this._placingDoorType || this._placingWindow)) {
+      if (isFp && e.key === "Escape" && (this._placingDoorType || this._placingWindow || this._placingReceiver)) {
         this._placingDoorType = null;
         this._placingWindow = false;
+        this._placingReceiver = false;
         this._render(); this._fpRedraw();
         return;
       }
@@ -537,8 +612,11 @@ export const FloorplanCanvasMixin = {
       if (mod && e.key.toLowerCase() === "c") {
         const floor = this._getActiveFloor();
         if (!floor) return;
-        // Copy selected point, wall, door, or window
-        if (this._selectedWindowId) {
+        // Copy selected receiver, point, wall, door, or window
+        if (this._selectedReceiverId) {
+          const rx = (floor.receivers || []).find((rr) => rr.id === this._selectedReceiverId);
+          if (rx) { this._fpClipboard = { kind: "receiver", data: JSON.parse(JSON.stringify(rx)) }; }
+        } else if (this._selectedWindowId) {
           const w = (floor.windows || []).find((ww) => ww.id === this._selectedWindowId);
           if (w) { this._fpClipboard = { kind: "window", data: JSON.parse(JSON.stringify(w)) }; }
         } else if (this._selectedDoorId) {
@@ -591,6 +669,13 @@ export const FloorplanCanvasMixin = {
           floor.windows = floor.windows || [];
           floor.windows.push({ id: nid, x: cl.x, y: cl.y, rotation: parseFloat(src.rotation) || 0, width: parseFloat(src.width) || 1.2, height: parseFloat(src.height) || 1.2, height_from_floor: parseFloat(src.height_from_floor) || 0.9 });
           this._selectedWindowId = nid;
+        } else if (this._fpClipboard.kind === "receiver") {
+          const src = this._fpClipboard.data;
+          const nid = "receiver_" + Date.now();
+          const cl = this._clampToFloor(floor, sn((parseFloat(src.x) || 0) + 0.5), sn((parseFloat(src.y) || 0) + 0.5));
+          floor.receivers = floor.receivers || [];
+          floor.receivers.push({ id: nid, name: src.name || "Receiver", x: cl.x, y: cl.y });
+          this._selectedReceiverId = nid;
         }
         this._saveFloorplan();
         this._render();
@@ -658,7 +743,12 @@ export const FloorplanCanvasMixin = {
       if (isFp && (e.key === "Delete" || e.key === "Backspace") && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement ? document.activeElement.tagName : "")) {
         const floor = this._getActiveFloor();
         if (!floor) return;
-        if (this._selectedWindowId) {
+        if (this._selectedReceiverId) {
+          this._fpPushUndo();
+          floor.receivers = (floor.receivers || []).filter((r) => r.id !== this._selectedReceiverId);
+          this._selectedReceiverId = null;
+          this._saveFloorplan(); this._render(); this._fpRedraw();
+        } else if (this._selectedWindowId) {
           this._fpPushUndo();
           floor.windows = (floor.windows || []).filter((w) => w.id !== this._selectedWindowId);
           this._selectedWindowId = null;
@@ -687,9 +777,32 @@ export const FloorplanCanvasMixin = {
 
     _handleFloorplanWheel(e) {
       e.preventDefault();
+      const canvas = this._fpCanvasEl();
+      const floor = this._getActiveFloor();
+      let anchor = null;
+      if (canvas && floor && (this._fpMode || "2d") !== "3d") {
+        try {
+          const rect = canvas.getBoundingClientRect();
+          const sx = (e.clientX - rect.left), sy = (e.clientY - rect.top);
+          anchor = { sx, sy, world: this._screenToWorld(sx, sy, floor) };
+        } catch (err) { anchor = null; }
+      }
       const delta = e.deltaY > 0 ? 0.9 : 1.1;
       this._floorplanScale *= delta;
       this._floorplanScale = Math.max(5, Math.min(200, this._floorplanScale));
+      if (anchor && floor) {
+        // Keep the world point under the cursor fixed while zooming.
+        try {
+          const fscale = parseFloat(floor.scale) || 1;
+          const cos = Math.cos(parseFloat(floor.rotation) || 0), sin = Math.sin(parseFloat(floor.rotation) || 0);
+          const sxw = anchor.world.x * fscale + (parseFloat(floor.offset_x) || 0);
+          const syw = anchor.world.y * fscale + (parseFloat(floor.offset_y) || 0);
+          const rx = sxw * cos - syw * sin;
+          const ry = sxw * sin + syw * cos;
+          this._floorplanOffset.x = anchor.sx - rx * this._floorplanScale;
+          this._floorplanOffset.y = anchor.sy - ry * this._floorplanScale;
+        } catch (err) { /* keep centered zoom */ }
+      }
       this._fpRedraw();
     }
 };

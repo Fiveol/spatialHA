@@ -110,6 +110,8 @@ export const Home3DMixin = {
     }
     const selWin = this._selectedWindowId ? (floor.windows || []).find((w) => w.id === this._selectedWindowId) : null;
     if (selWin) ring(parseFloat(selWin.x) || 0, parseFloat(selWin.y) || 0, zSlab + 0.65, "#ff9800", 12);
+    const selRx = this._selectedReceiverId ? (floor.receivers || []).find((r) => r.id === this._selectedReceiverId) : null;
+    if (selRx) ring(parseFloat(selRx.x) || 0, parseFloat(selRx.y) || 0, zSlab + 0.45, "#ff9800", 12);
     if (this._contextMenu && this._contextMenu.pointId) {
       const pt = floor.points.find((p) => p.id === this._contextMenu.pointId);
       if (pt) {
@@ -214,6 +216,12 @@ export const Home3DMixin = {
         lines.push({ a: [pt.x, pt.y, z0 + 0.25], b: [pt.x, pt.y, z0 + 0.7], stroke: "#03a9f4", width: 3 });
         dots.push({ p: [pt.x, pt.y, z0 + 0.7] });
       }
+      // BLE receivers as green posts (placement only for now)
+      for (const rx of (floor.receivers || [])) {
+        const rxFill = (typeof this !== "undefined" && this._selectedReceiverId === rx.id) ? "#ff9800" : "#22c55e";
+        lines.push({ a: [rx.x, rx.y, z0 + 0.25], b: [rx.x, rx.y, z0 + 0.9], stroke: rxFill, width: 3 });
+        dots.push({ p: [rx.x, rx.y, z0 + 0.9], fill: rxFill });
+      }
       faces.push({ label: (floor.name || "") + " (L" + (floor.level || 0) + ")", at: [0, 0, z0], isLabel: true });
     });
     return { faces, lines, dots };
@@ -299,7 +307,7 @@ export const Home3DMixin = {
     allDots.sort((a, b) => b.depth - a.depth);
     for (const d of allDots) {
       const q = proj(...d.p);
-      ctx.fillStyle = "#03a9f4";
+      ctx.fillStyle = d.fill || "#03a9f4";
       ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, Math.PI * 2); ctx.fill();
     }
   },
